@@ -104,11 +104,14 @@ const executeJoin = async (
   }
 
   // 2. Create tenantMember document — uid_tenantId (consistent with Register.tsx)
-  const membershipId = `${uid}_${invite.tenantId}`;
+  const membershipId = `${invite.tenantId}_${uid}`;
   await setDoc(doc(db, "tenantMembers", membershipId), {
     userId:      uid,
     tenantId:    invite.tenantId,
+     name:        form.name.trim(),
+  email:       invite.email.toLowerCase(),
     role:        invite.role,
+
     status:      "active",
     joinedAt:    Timestamp.now(),
     inviteToken: token,
@@ -438,7 +441,6 @@ export default function JoinPage() {
         {/* Done */}
         {step === "done" && (
           <StateView
-            icon="🎉"
             title="You're in!"
             sub={`Welcome to ${tenant?.name ?? "the group"}. Redirecting you to the dashboard…`}
           />
