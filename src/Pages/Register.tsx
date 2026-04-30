@@ -95,7 +95,7 @@ const handleSubmit = async () => {
       createdAt: Timestamp.now(),
     });
 
-    // ✅ Key order fixed: tenantId_uid
+    //  Key order fixed: tenantId_uid
     await setDoc(doc(db, "tenantMembers", `${tenantId}_${uid}`), {
       tenantId,
       userId: uid,
@@ -106,7 +106,7 @@ const handleSubmit = async () => {
       joinedAt: Timestamp.now(),
     });
 
-    // ✅ Write tenantId to user doc so Dashboard can find it
+    //  Write tenantId to user doc so Dashboard can find it
     await setDoc(doc(db, "users", uid), { tenantId }, { merge: true });
 
     await addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
@@ -256,7 +256,7 @@ const handleSubmit = async () => {
                 <p className="form-sub">You'll be the admin of your welfare group.</p>
               </div>
 
-              {error && <div className="error-box">⚠ {error}</div>}
+              {error && <div className="error-box"> {error}</div>}
 
               <div className="form-group">
                 <label className="form-label">Full name</label>

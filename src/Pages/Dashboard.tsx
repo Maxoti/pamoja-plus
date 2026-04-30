@@ -211,12 +211,40 @@ export default function Dashboard() {
   // ── Data fetch ─────────────────────────────────────────────────────────────
 
   const fetchDashboard = useCallback(async (uid: string) => {
-    // ── 1. Resolve tenantId ────────────────────────────────────────────────────
+
+    // ── DEBUG — remove after issue is resolved ─────────────────────────────
+    console.log("=== FETCH START ===");
+    console.log("uid:", uid);
+
+    const _userSnap = await getDoc(doc(db, "users", uid));
+    console.log("user doc exists:", _userSnap.exists());
+    console.log("user data:", _userSnap.data());
+    console.log("tenantId from user doc:", _userSnap.data()?.tenantId ?? "MISSING");
+
+    if (!_userSnap.data()?.tenantId) {
+      console.log("No tenantId — querying tenantMembers...");
+      const _byUser = await getDocs(query(
+        collection(db, "tenantMembers"),
+        where("userId", "==", uid),
+        limit(1),
+      ));
+      console.log("tenantMembers query empty:", _byUser.empty);
+      if (!_byUser.empty) console.log("Found membership:", _byUser.docs[0].data());
+      else {
+        console.log("No membership — querying tenants...");
+        const _tenants = await getDocs(query(collection(db, "tenants"), limit(1)));
+        console.log("tenants empty:", _tenants.empty);
+        if (!_tenants.empty) console.log("First tenant id:", _tenants.docs[0].id);
+      }
+    }
+    // ── END DEBUG ──────────────────────────────────────────────────────────
+
+    // ── 1. Resolve tenantId ────────────────────────────────────────────────
     const userSnap = await getDoc(doc(db, "users", uid));
     const userData = userSnap.exists() ? userSnap.data() : {};
     let tid: string = userData.tenantId ?? "";
 
-    // ── 2. Fallback A — query tenantMembers by userId ──────────────────────────
+    // ── 2. Fallback A — query tenantMembers by userId ──────────────────────
     if (!tid) {
       const byUser = await getDocs(query(
         collection(db, "tenantMembers"),
@@ -231,8 +259,7 @@ export default function Dashboard() {
       }
     }
 
-    // ── 3. Fallback B — auto-link to first available tenant ────────────────────
-    //    Handles accounts registered before tenantId write was added
+    // ── 3. Fallback B — auto-link to first available tenant ────────────────
     if (!tid) {
       const tenants = await getDocs(query(collection(db, "tenants"), limit(1)));
       if (tenants.empty) throw new Error("No tenants found in the system");
@@ -252,12 +279,12 @@ export default function Dashboard() {
       await setDoc(doc(db, "users", uid), { tenantId: tid }, { merge: true });
       setMemberRole("owner");
     } else {
-      // ── 4. Resolve role when tenantId already known ────────────────────────
+      // ── 4. Resolve role when tenantId already known ──────────────────────
       const mSnap = await getDoc(doc(db, "tenantMembers", `${tid}_${uid}`));
       if (mSnap.exists()) setMemberRole(mSnap.data().role ?? "member");
     }
 
-    // ── 4. Parallel fetch all dashboard data ───────────────────────────────────
+    // ── 5. Parallel fetch all dashboard data ──────────────────────────────
     const [tenantSnap, contribSnap, annSnap, meetSnap, pledgeSnap, cycleSnap] =
       await Promise.all([
         getDoc(doc(db, "tenants", tid)),
@@ -280,7 +307,7 @@ export default function Dashboard() {
         )),
       ]);
 
-    // ── 5. Shape the data ──────────────────────────────────────────────────────
+    // ── 6. Shape the data ─────────────────────────────────────────────────
     const contributions = contribSnap.docs.map(
       (d) => ({ id: d.id, ...d.data() } as Contribution)
     );
@@ -505,13 +532,11 @@ export default function Dashboard() {
 
       <div className="main-content">
 
-        {/* Mobile bar */}
         <div className="mobile-bar">
           <div className="mobile-logo">Pamoja<span>Plus</span></div>
           <button className="hamburger" onClick={() => setSidebarOpen(true)}>☰</button>
         </div>
 
-        {/* Topbar */}
         <header className="topbar">
           <div className="topbar-title">{data.tenant?.name ?? "Dashboard"}</div>
           <div className="topbar-right">
@@ -524,10 +549,8 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* Body */}
         <main className="page-body">
 
-          {/* Cycle banner */}
           <div className="cycle-banner">
             <div>
               <div className="cycle-label">Current Cycle</div>
@@ -537,7 +560,6 @@ export default function Dashboard() {
             <div className="cycle-badge">{data.cycleStatus}</div>
           </div>
 
-          {/* Stats */}
           <div className="stats-grid">
             {[
               { label: "Total Collected",  value: fmt.kes(data.totalContributions),    sub: "across all contributions", cls: ""     },
@@ -553,10 +575,8 @@ export default function Dashboard() {
             ))}
           </div>
 
-          {/* Content grid */}
           <div className="content-grid">
 
-            {/* Contributions */}
             <div className="panel">
               <div className="panel-header">
                 <div className="panel-title">Recent Contributions</div>
@@ -589,10 +609,8 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Right column */}
             <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
-              {/* Announcements */}
               <div className="panel">
                 <div className="panel-header">
                   <div className="panel-title">Announcements</div>
@@ -610,7 +628,6 @@ export default function Dashboard() {
                 }
               </div>
 
-              {/* Meetings */}
               <div className="panel">
                 <div className="panel-header">
                   <div className="panel-title">Meetings</div>
