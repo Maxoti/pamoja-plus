@@ -4,7 +4,7 @@ import { doc, setDoc, Timestamp } from "firebase/firestore";
 const seedDatabase = async () => {
 
   // 1. Create a demo tenant (welfare group)
-  const tenantId = "tenant_001";
+  const tenantId = "aAg6ZWT28zNxdLAoJVdzcvKNt7A3";
   await setDoc(doc(db, "tenants", tenantId), {
     name: "Kotuoma Welfare Group",
     ownerUserId: "user_001",
