@@ -4,9 +4,7 @@ import './index.css'
 import App from './App.tsx'
 import { AuthProvider } from './auth/AuthProvider'
 
-import { seedDatabase } from './seed.ts'
 
-seedDatabase().catch(console.error);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
