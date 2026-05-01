@@ -12,9 +12,9 @@ import {
 import { db, resolveTenantId, auditLogsCol } from "../firebase";
 import { pageStyles } from "../styles/pageStyles";
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 // Types
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 
 interface AuditLog {
   id: string;
@@ -32,71 +32,62 @@ interface UserSnapshot {
   role: string;
 }
 
-// Enriched log (UI layer only)
 interface EnrichedAuditLog extends AuditLog {
   actorName: string;
   actorEmail: string;
   actorRole: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Config
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// UI Config
+// ─────────────────────────────────────────────────────────────
 
-const ACTION_CONFIG: Record<
-  string,
-  { color: string; bg: string; label: string; icon: string }
-> = {
-  CREATE_CONTRIBUTION: { color: "#16A34A", bg: "#EDFAF2", label: "Contribution recorded", icon: "💰" },
-  CONTRIBUTION_VERIFIED: { color: "#16A34A", bg: "#EDFAF2", label: "Contribution verified", icon: "✔" },
-  CONTRIBUTION_REJECTED: { color: "#DC2626", bg: "#FEF2F2", label: "Contribution rejected", icon: "✕" },
-  CREATE_PLEDGE: { color: "#2563EB", bg: "#EFF6FF", label: "Pledge added", icon: "📌" },
-  INVITE_MEMBER: { color: "#7C3AED", bg: "#F5F0FF", label: "Member invited", icon: "👤" },
+const ACTIONS: Record<string, { label: string; color: string; bg: string }> =
+{
+  CREATE_CONTRIBUTION: { label: "Contribution recorded", color: "#16A34A", bg: "#ECFDF5" },
+  CONTRIBUTION_VERIFIED: { label: "Contribution verified", color: "#16A34A", bg: "#ECFDF5" },
+  CONTRIBUTION_REJECTED: { label: "Contribution rejected", color: "#DC2626", bg: "#FEF2F2" },
+  CREATE_PLEDGE: { label: "Pledge created", color: "#2563EB", bg: "#EFF6FF" },
+  INVITE_MEMBER: { label: "Member invited", color: "#7C3AED", bg: "#F5F3FF" },
 };
 
-const DEFAULT_CFG = {
-  color: "#6B7280",
-  bg: "#F3F4F6",
-  label: "Unknown action",
-  icon: "•",
-};
+const fallback = { label: "Unknown action", color: "#6B7280", bg: "#F3F4F6" };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 
-const getActionConfig = (action: string) =>
-  ACTION_CONFIG[action] ?? DEFAULT_CFG;
-
-const timeAgo = (ts: Timestamp, now: number) => {
-  const diff = now - ts.toDate().getTime();
+const formatTimeAgo = (ts: Timestamp) => {
+  const diff = Date.now() - ts.toDate().getTime();
   const mins = Math.floor(diff / 60000);
   const hrs = Math.floor(mins / 60);
   const days = Math.floor(hrs / 24);
 
-  if (days > 0) return `${days}d ago`;
-  if (hrs > 0) return `${hrs}h ago`;
-  if (mins > 0) return `${mins}m ago`;
+  if (days) return `${days}d ago`;
+  if (hrs) return `${hrs}h ago`;
+  if (mins) return `${mins}m ago`;
   return "just now";
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
+const getAction = (action: string) => ACTIONS[action] ?? fallback;
+
+// ─────────────────────────────────────────────────────────────
 // Component
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
 
 export default function AuditLog() {
   const tenantId = resolveTenantId() ?? "tenant_001";
 
   const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [usersMap, setUsersMap] = useState<Record<string, UserSnapshot>>({});
+  const [users, setUsers] = useState<Record<string, UserSnapshot>>({});
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [filterAction, setFilterAction] = useState("all");
-  const [now] = useState(() => Date.now());
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 1. Load audit logs (real-time)
-  // ─────────────────────────────────────────────────────────────────────────
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+
+  // ─────────────────────────────────────────────
+  // Load audit logs (real-time)
+  // ─────────────────────────────────────────────
 
   useEffect(() => {
     const q = query(
@@ -106,80 +97,77 @@ export default function AuditLog() {
     );
 
     const unsub = onSnapshot(q, (snap) => {
-      setLogs(
-        snap.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        })) as AuditLog[]
-      );
+      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() } as AuditLog)));
       setLoading(false);
     });
 
     return unsub;
   }, [tenantId]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 2. Load user snapshots (ONE-TIME BATCH)
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Load user snapshots (once)
+  // ─────────────────────────────────────────────
 
   useEffect(() => {
     const loadUsers = async () => {
       const snap = await getDocs(collection(db, "userSnapshots"));
 
       const map: Record<string, UserSnapshot> = {};
-      snap.forEach((doc) => {
+      snap.forEach(doc => {
         map[doc.id] = doc.data() as UserSnapshot;
       });
 
-      setUsersMap(map);
+      setUsers(map);
     };
 
     loadUsers();
   }, []);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 3. Enrich logs (NO extra Firestore calls)
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Enrich logs
+  // ─────────────────────────────────────────────
 
-  const enrichedLogs: EnrichedAuditLog[] = useMemo(() => {
-    return logs.map((log) => {
-      const user = usersMap[log.actorUserId];
+  const enriched: EnrichedAuditLog[] = useMemo(() => {
+    return logs.map(log => {
+      const u = users[log.actorUserId];
 
       return {
         ...log,
-        actorName: user?.name ?? log.actorUserId,
-        actorEmail: user?.email ?? "",
-        actorRole: user?.role ?? "",
+        actorName: u?.name ?? log.actorUserId,
+        actorEmail: u?.email ?? "",
+        actorRole: u?.role ?? "",
       };
     });
-  }, [logs, usersMap]);
+  }, [logs, users]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 4. Filtering
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // Filtered logs
+  // ─────────────────────────────────────────────
 
   const filtered = useMemo(() => {
-    return enrichedLogs.filter((l) => {
-      const matchSearch =
-        l.actorName.toLowerCase().includes(search.toLowerCase()) ||
-        l.action.toLowerCase().includes(search.toLowerCase()) ||
-        l.entityId.toLowerCase().includes(search.toLowerCase());
+    return enriched.filter(l => {
+      const q = search.toLowerCase();
 
-      const matchFilter =
-        filterAction === "all" || l.action === filterAction;
+      const matchesSearch =
+        l.actorName.toLowerCase().includes(q) ||
+        l.action.toLowerCase().includes(q) ||
+        l.entityId.toLowerCase().includes(q);
 
-      return matchSearch && matchFilter;
+      const matchesFilter =
+        filter === "all" || l.action === filter;
+
+      return matchesSearch && matchesFilter;
     });
-  }, [enrichedLogs, search, filterAction]);
+  }, [enriched, search, filter]);
 
-  const uniqueActions = useMemo(
-    () => [...new Set(logs.map((l) => l.action))],
+  const actions = useMemo(
+    () => [...new Set(logs.map(l => l.action))],
     [logs]
   );
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
   // UI
-  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────
 
   return (
     <div className="page">
@@ -190,29 +178,28 @@ export default function AuditLog() {
         <div>
           <h1 className="page-title">Audit Log</h1>
           <p className="page-sub">
-            Immutable system history with enriched actor context
+            System-wide immutable activity tracking
           </p>
         </div>
       </div>
 
-      {/* SEARCH */}
-      <div className="search-bar">
+      {/* SEARCH + FILTER (STYLED) */}
+      <div style={styles.searchBar}>
         <input
-          className="search-input"
-          placeholder="Search actor, action, entity..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by user, action, or entity..."
+          style={styles.searchInput}
         />
 
         <select
-          value={filterAction}
-          onChange={(e) => setFilterAction(e.target.value)}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          style={styles.select}
         >
           <option value="all">All actions</option>
-          {uniqueActions.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
+          {actions.map(a => (
+            <option key={a} value={a}>{a}</option>
           ))}
         </select>
       </div>
@@ -220,58 +207,37 @@ export default function AuditLog() {
       {/* LIST */}
       <div className="card">
         {loading ? (
-          <div className="loading">
-            <div className="spinner" />
+          <div className="loading">Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ padding: 20, textAlign: "center", color: "#888" }}>
+            No audit logs found
           </div>
         ) : (
-          filtered.map((log) => {
-            const cfg = getActionConfig(log.action);
+          filtered.map(log => {
+            const c = getAction(log.action);
 
             return (
-              <div
-                key={log.id}
-                style={{
-                  display: "flex",
-                  gap: 14,
-                  padding: "14px 18px",
-                  borderBottom: "1px solid #F3F3F3",
-                }}
-              >
-                {/* ICON */}
-                <div
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 10,
-                    background: cfg.bg,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {cfg.icon}
-                </div>
+              <div key={log.id} style={styles.row}>
+                <div style={styles.icon(c.bg)} />
 
-                {/* CONTENT */}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600 }}>
-                    {cfg.label}
+                  <div style={styles.title}>
+                    {c.label}
                   </div>
 
-                  <div style={{ fontSize: 12, color: "#666" }}>
+                  <div style={styles.meta}>
                     <strong>{log.actorName}</strong>
                     {log.actorEmail && ` • ${log.actorEmail}`}
                     {log.actorRole && ` • ${log.actorRole}`}
                   </div>
 
-                  <div style={{ fontSize: 11, color: "#999" }}>
+                  <div style={styles.small}>
                     {log.entityType} → {log.entityId}
                   </div>
                 </div>
 
-                {/* TIME */}
-                <div style={{ fontSize: 12, color: "#888" }}>
-                  {timeAgo(log.timestamp, now)}
+                <div style={styles.time}>
+                  {formatTimeAgo(log.timestamp)}
                 </div>
               </div>
             );
@@ -281,3 +247,71 @@ export default function AuditLog() {
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────────────────
+// Styles (clean + modern search bar)
+// ─────────────────────────────────────────────────────────────
+
+const styles = {
+  searchBar: {
+    display: "flex",
+    gap: 12,
+    marginBottom: 18,
+  } as React.CSSProperties,
+
+  searchInput: {
+    flex: 1,
+    padding: "12px 16px",
+    borderRadius: 12,
+    border: "1px solid #E5E7EB",
+    outline: "none",
+    fontSize: 14,
+    background: "#fff",
+    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+  } as React.CSSProperties,
+
+  select: {
+    padding: "12px 14px",
+    borderRadius: 12,
+    border: "1px solid #E5E7EB",
+    background: "#fff",
+    fontSize: 14,
+    cursor: "pointer",
+  } as React.CSSProperties,
+
+  row: {
+    display: "flex",
+    gap: 14,
+    padding: "14px 16px",
+    borderBottom: "1px solid #F3F4F6",
+  } as React.CSSProperties,
+
+  icon: (bg: string) => ({
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    background: bg,
+  }) as React.CSSProperties,
+
+  title: {
+    fontWeight: 600,
+    fontSize: 14,
+  } as React.CSSProperties,
+
+  meta: {
+    fontSize: 12,
+    color: "#666",
+  } as React.CSSProperties,
+
+  small: {
+    fontSize: 11,
+    color: "#999",
+  } as React.CSSProperties,
+
+  time: {
+    fontSize: 12,
+    color: "#888",
+    minWidth: 80,
+    textAlign: "right" as const,
+  },
+};
