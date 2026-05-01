@@ -1,10 +1,20 @@
-import { useEffect, useState } from "react";
-import { collection, query, onSnapshot, addDoc, Timestamp, orderBy } from "firebase/firestore";
+import { useEffect, useMemo, useState } from "react";
+import {
+  collection,
+  query,
+  onSnapshot,
+  addDoc,
+  Timestamp,
+  orderBy,
+  doc,
+  updateDoc,
+} from "firebase/firestore";
+
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+import { usePermissions } from "../auth/usePermissions";
 import { pageStyles } from "../styles/pageStyles";
 
-const TENANT_ID = "tenant_001"; // Replace with dynamic tenantId from context
 interface Contribution {
   id: string;
   userId: string;
@@ -17,12 +27,15 @@ interface Contribution {
 }
 
 export default function Contributions() {
-  const { currentUser } = useAuth();
-  const [contributions, setContributions] = useState<Contribution[]>([]);
+  const { currentUser, tenantId } = useAuth();
+  const { canWrite, isAdmin,  isTreasurer } = usePermissions();
+
+  const [data, setData] = useState<Contribution[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
   const [search, setSearch] = useState("");
-  const [error, setError] = useState("");
+
+  const [showModal, setShowModal] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [form, setForm] = useState({
@@ -33,82 +46,169 @@ export default function Contributions() {
     pledgeId: "",
   });
 
+  /**
+   * Real-time subscription (tenant-scoped)
+   */
   useEffect(() => {
+    if (!tenantId) return;
+
     const q = query(
-      collection(db, `tenants/${TENANT_ID}/contributions`),
+      collection(db, `tenants/${tenantId}/contributions`),
       orderBy("createdAt", "desc")
     );
+
     const unsub = onSnapshot(q, (snap) => {
-      setContributions(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Contribution)));
+      const rows = snap.docs.map(
+        (d) => ({ id: d.id, ...d.data() } as Contribution)
+      );
+      setData(rows);
       setLoading(false);
     });
+
     return unsub;
-  }, []);
+  }, [tenantId]);
 
-  const totalCollected = contributions.reduce((sum, c) => sum + c.amount, 0);
-  const verified = contributions.filter((c) => c.status === "verified");
-  const pending = contributions.filter((c) => c.status === "pending");
-  const flagged = contributions.filter((c) => c.status === "flagged");
+  /**
+   * Derived state (memoized)
+   */
+  const stats = useMemo(() => {
+    const total = data.reduce((s, c) => s + c.amount, 0);
+    const verified = data.filter((c) => c.status === "verified");
+    const pending = data.filter((c) => c.status === "pending");
+    const flagged = data.filter((c) => c.status === "flagged");
 
-  const filtered = contributions.filter(
-    (c) =>
-      c.mpesaRef.toLowerCase().includes(search.toLowerCase()) ||
-      c.userId.toLowerCase().includes(search.toLowerCase())
-  );
+    return {
+      total,
+      count: data.length,
+      verified,
+      pending,
+      flagged,
+    };
+  }, [data]);
 
+  const filtered = useMemo(() => {
+    if (!search) return data;
+
+    const s = search.toLowerCase();
+
+    return data.filter(
+      (c) =>
+        c.mpesaRef.toLowerCase().includes(s) ||
+        c.userId.toLowerCase().includes(s) ||
+        String(c.amount).includes(s)
+    );
+  }, [data, search]);
+
+  /**
+   * Create contribution (RBAC enforced)
+   */
   const handleSubmit = async () => {
-    if (!form.amount || !form.mpesaRef) { setError("Amount and M-Pesa ref are required"); return; }
-    if (isNaN(Number(form.amount)) || Number(form.amount) <= 0) { setError("Enter a valid amount"); return; }
+    if (!canWrite) {
+      setError("You do not have permission to perform this action.");
+      return;
+    }
 
-    // Check duplicate mpesaRef
-    const exists = contributions.find((c) => c.mpesaRef.toUpperCase() === form.mpesaRef.toUpperCase());
-    if (exists) { setError("This M-Pesa reference already exists. Duplicate rejected."); return; }
+    if (!tenantId || !currentUser) return;
+
+    if (!form.amount || !form.mpesaRef) {
+      setError("Amount and M-Pesa ref are required");
+      return;
+    }
+
+    const amount = Number(form.amount);
+    if (isNaN(amount) || amount <= 0) {
+      setError("Enter a valid amount");
+      return;
+    }
 
     setSubmitting(true);
-    setError("");
+    setError(null);
+
     try {
-      await addDoc(collection(db, `tenants/${TENANT_ID}/contributions`), {
-        userId: currentUser?.uid || "unknown",
+      const mpesaRef = form.mpesaRef.toUpperCase();
+
+      await addDoc(collection(db, `tenants/${tenantId}/contributions`), {
+        userId: currentUser.uid,
         groupId: form.groupId,
         cycleId: form.cycleId,
         pledgeId: form.pledgeId || null,
-        amount: Number(form.amount),
-        mpesaRef: form.mpesaRef.toUpperCase(),
-        status: "pending",
+        amount,
+        mpesaRef,
+        status: "pending", // never trust client to set anything else
+        verificationMethod: "manual",
         verifiedBy: null,
         verifiedAt: null,
-        verificationMethod: "manual",
-        checkoutRequestId: null,
         createdAt: Timestamp.now(),
       });
 
-      // Audit log
-      await addDoc(collection(db, `tenants/${TENANT_ID}/auditLogs`), {
-        actorUserId: currentUser?.uid || "unknown",
+      await addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
+        actorUserId: currentUser.uid,
         action: "CREATE_CONTRIBUTION",
         entityType: "contribution",
-        entityId: form.mpesaRef.toUpperCase(),
+        entityId: mpesaRef,
         timestamp: Timestamp.now(),
       });
 
-      setForm({ amount: "", mpesaRef: "", groupId: "group_001", cycleId: "cycle_001", pledgeId: "" });
+      setForm({
+        amount: "",
+        mpesaRef: "",
+        groupId: "group_001",
+        cycleId: "cycle_001",
+        pledgeId: "",
+      });
+
       setShowModal(false);
-    } catch {
-      setError("Failed to save contribution. Try again.");
+    } catch (err) {
+      console.error(err);
+      setError("Failed to save contribution");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const statusBadge = (status: string) => {
-    const map: Record<string, string> = {
-      verified: "badge-verified", pending: "badge-pending",
-      rejected: "badge-rejected", flagged: "badge-flagged",
+  /**
+   * Status updates (strict RBAC)
+   */
+  const updateStatus = async (
+    id: string,
+    status: Contribution["status"]
+  ) => {
+    if (!tenantId || !currentUser) return;
+
+    // Only privileged roles
+    if (!( isAdmin || isTreasurer)) {
+      setError("You are not allowed to verify or flag contributions.");
+      return;
+    }
+
+    try {
+      await updateDoc(
+        doc(db, `tenants/${tenantId}/contributions/${id}`),
+        {
+          status,
+          verifiedBy: currentUser.uid,
+          verifiedAt: Timestamp.now(),
+        }
+      );
+    } catch (err) {
+      console.error(err);
+      setError("Failed to update status");
+    }
+  };
+
+  const statusBadge = (status: Contribution["status"]) => {
+    const map = {
+      verified: "badge-verified",
+      pending: "badge-pending",
+      rejected: "badge-rejected",
+      flagged: "badge-flagged",
     };
-    const icons: Record<string, string> = {
-      verified: "✓", pending: "◷", rejected: "✕", flagged: "⚑",
-    };
-    return <span className={`badge ${map[status] || "badge-pending"}`}>{icons[status]} {status}</span>;
+
+    return (
+      <span className={`badge ${map[status]}`}>
+        {status}
+      </span>
+    );
   };
 
   return (
@@ -118,34 +218,52 @@ export default function Contributions() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Contributions</h1>
-          <p className="page-sub">All M-Pesa payments — verified, pending, and flagged</p>
+          <p className="page-sub">
+            M-Pesa payments across the tenant
+          </p>
         </div>
-        <button className="btn-add" onClick={() => setShowModal(true)}>
-          + Record Contribution
-        </button>
+
+        {canWrite && (
+          <button
+            className="btn-add"
+            onClick={() => setShowModal(true)}
+          >
+            + Record Contribution
+          </button>
+        )}
       </div>
 
       {/* Stats */}
       <div className="stat-row">
         <div className="stat-card">
-          <div className="stat-label">Total Collected</div>
-          <div className="stat-value">KES {totalCollected.toLocaleString()}</div>
-          <div className="stat-sub">{contributions.length} transactions</div>
+          <div className="stat-label">Total</div>
+          <div className="stat-value">
+            KES {stats.total.toLocaleString()}
+          </div>
+          <div className="stat-sub">
+            {stats.count} transactions
+          </div>
         </div>
+
         <div className="stat-card">
           <div className="stat-label">Verified</div>
-          <div className="stat-value" style={{ color: "#16A34A" }}>{verified.length}</div>
-          <div className="stat-sub">KES {verified.reduce((s, c) => s + c.amount, 0).toLocaleString()}</div>
+          <div className="stat-value">
+            {stats.verified.length}
+          </div>
         </div>
+
         <div className="stat-card">
-          <div className="stat-label">Pending Review</div>
-          <div className="stat-value" style={{ color: "#B45309" }}>{pending.length}</div>
-          <div className="stat-sub">Awaiting verification</div>
+          <div className="stat-label">Pending</div>
+          <div className="stat-value">
+            {stats.pending.length}
+          </div>
         </div>
+
         <div className="stat-card">
           <div className="stat-label">Flagged</div>
-          <div className="stat-value" style={{ color: "#EA580C" }}>{flagged.length}</div>
-          <div className="stat-sub">Needs attention</div>
+          <div className="stat-value">
+            {stats.flagged.length}
+          </div>
         </div>
       </div>
 
@@ -153,7 +271,7 @@ export default function Contributions() {
       <div className="search-bar">
         <input
           className="search-input"
-          placeholder="Search by M-Pesa ref or member..."
+          placeholder="Search..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -162,106 +280,94 @@ export default function Contributions() {
       {/* Table */}
       <div className="card">
         {loading ? (
-          <div className="loading"><div className="spinner" /></div>
+          <div className="loading">Loading...</div>
         ) : filtered.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-icon">💸</div>
-            <div className="empty-title">No contributions yet</div>
-            <div className="empty-sub">Record the first M-Pesa payment to get started.</div>
+            No contributions found
           </div>
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Member</th>
-                  <th>Amount</th>
-                  <th>M-Pesa Ref</th>
-                  <th>Status</th>
-                  <th>Method</th>
-                  <th>Date</th>
-                  <th>Actions</th>
+          <table>
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Amount</th>
+                <th>Ref</th>
+                <th>Status</th>
+                <th>Date</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.userId}</td>
+                  <td>KES {c.amount.toLocaleString()}</td>
+                  <td>{c.mpesaRef}</td>
+                  <td>{statusBadge(c.status)}</td>
+                  <td>
+                    {c.createdAt
+                      ?.toDate()
+                      .toLocaleDateString()}
+                  </td>
+                  <td>
+                    {c.status === "pending" &&
+                      (isAdmin ||  isTreasurer) && (
+                        <>
+                          <button
+                            onClick={() =>
+                              updateStatus(c.id, "verified")
+                            }
+                          >
+                            Verify
+                          </button>
+                          <button
+                            onClick={() =>
+                              updateStatus(c.id, "flagged")
+                            }
+                          >
+                            Flag
+                          </button>
+                        </>
+                      )}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filtered.map((c) => (
-                  <tr key={c.id}>
-                    <td>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <div className="avatar" style={{ background: "#1A3A2A", fontSize: 12 }}>
-                          {c.userId.slice(0, 2).toUpperCase()}
-                        </div>
-                        <span style={{ fontWeight: 500 }}>{c.userId}</span>
-                      </div>
-                    </td>
-                    <td style={{ fontFamily: "monospace", fontWeight: 600, color: "#1A3A2A" }}>
-                      KES {c.amount.toLocaleString()}
-                    </td>
-                    <td><span className="mpesa-ref">{c.mpesaRef}</span></td>
-                    <td>{statusBadge(c.status)}</td>
-                    <td style={{ fontSize: 12, color: "#888" }}>{c.verificationMethod || "manual"}</td>
-                    <td style={{ fontSize: 13, color: "#888" }}>
-                      {c.createdAt?.toDate().toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}
-                    </td>
-                    <td>
-                      <div style={{ display: "flex", gap: 6 }}>
-                        {c.status === "pending" && (
-                          <>
-                            <button className="action-btn">✓ Verify</button>
-                            <button className="action-btn danger">⚑ Flag</button>
-                          </>
-                        )}
-                        {c.status === "flagged" && (
-                          <button className="action-btn">Review</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
 
       {/* Modal */}
-      {showModal && (
-        <div className="modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2 className="modal-title">Record Contribution</h2>
-              <button className="modal-close" onClick={() => setShowModal(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              {error && <div className="error-box">⚠ {error}</div>}
+      {showModal && canWrite && (
+        <div className="modal-overlay">
+          <div className="modal">
+            {error && <div>{error}</div>}
 
-              <div style={{ background: "#FEF9EC", border: "1px solid #FDE68A", borderRadius: 10, padding: "10px 14px", marginBottom: 18, fontSize: 13, color: "#92400E" }}>
-                ⚡ M-Pesa refs are validated for duplicates automatically.
-              </div>
+            <input
+              placeholder="Amount"
+              value={form.amount}
+              onChange={(e) =>
+                setForm({ ...form, amount: e.target.value })
+              }
+            />
 
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Amount (KES)</label>
-                  <input className="form-input" type="number" placeholder="e.g. 1000" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">M-Pesa Reference</label>
-                  <input className="form-input" placeholder="e.g. QHJ7YT123" value={form.mpesaRef} onChange={(e) => setForm({ ...form, mpesaRef: e.target.value })} style={{ textTransform: "uppercase" }} />
-                </div>
-              </div>
+            <input
+              placeholder="M-Pesa Ref"
+              value={form.mpesaRef}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  mpesaRef: e.target.value,
+                })
+              }
+            />
 
-              <div className="form-group">
-                <label className="form-label">Pledge ID <span style={{ color: "#BBB", fontWeight: 400 }}>(optional)</span></label>
-                <input className="form-input" placeholder="Links payment to a pledge" value={form.pledgeId} onChange={(e) => setForm({ ...form, pledgeId: e.target.value })} />
-              </div>
-
-              <div className="modal-actions">
-                <button className="btn-cancel" onClick={() => setShowModal(false)}>Cancel</button>
-                <button className="btn-submit" onClick={handleSubmit} disabled={submitting}>
-                  {submitting ? "Saving..." : "Record Payment"}
-                </button>
-              </div>
-            </div>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+            >
+              {submitting ? "Saving..." : "Save"}
+            </button>
           </div>
         </div>
       )}

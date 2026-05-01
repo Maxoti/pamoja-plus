@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   collection,
   query,
@@ -11,37 +11,32 @@ import {
 } from "firebase/firestore";
 import { db, resolveTenantId } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
+import { usePermissions } from "../auth/usePermissions";
 import { pageStyles } from "../styles/pageStyles";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Announcement {
-  id: string;
-  title: string;
-  body: string;
-  postedBy: string;
-  groupId: string;
+  id:        string;
+  title:     string;
+  body:      string;
+  postedBy:  string;
+  groupId:   string;
   createdAt: Timestamp;
 }
 
 interface AnnouncementForm {
-  title: string;
-  body: string;
+  title:   string;
+  body:    string;
   groupId: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const AVATAR_COLORS = ["#1A3A2A", "#C8891A", "#2D6A4F", "#7C3AED", "#2563EB"];
-
-const INITIAL_FORM: AnnouncementForm = {
-  title: "",
-  body: "",
-  groupId: "group_001",
-};
+const AVATAR_COLORS  = ["#1A3A2A", "#C8891A", "#2D6A4F", "#7C3AED", "#2563EB"];
+const INITIAL_FORM: AnnouncementForm = { title: "", body: "", groupId: "group_001" };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-// Defined at module level — pure function, no side effects
 
 const timeAgo = (ts: Timestamp, baseTime: number): string => {
   if (!ts) return "—";
@@ -55,25 +50,30 @@ const timeAgo = (ts: Timestamp, baseTime: number): string => {
   return "Just now";
 };
 
+const formatDate = (ts: Timestamp): string =>
+  ts?.toDate().toLocaleDateString("en-KE", {
+    day: "numeric", month: "long", year: "numeric",
+  });
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Announcements() {
-  const { currentUser } = useAuth();
+  const { currentUser }    = useAuth();
+  const { canWrite }       = usePermissions();
+  const tenantId           = resolveTenantId() ?? "tenant_001";
+  const [renderTime]       = useState(() => Date.now());
 
-  // ── State ───────────────────────────────────────────────────────────────────
+  // ── State ──────────────────────────────────────────────────────────────────
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [loading, setLoading]             = useState(true);
-  const [showModal, setShowModal]         = useState(false);
-  const [search, setSearch]               = useState("");
-  const [error, setError]                 = useState("");
-  const [submitting, setSubmitting]       = useState(false);
-  const [form, setForm]                   = useState<AnnouncementForm>(INITIAL_FORM);
-  const [renderTime]                      = useState(() => Date.now()); // stable per render session
+  const [loading,       setLoading]       = useState(true);
+  const [fetchError,    setFetchError]    = useState<string | null>(null);
+  const [search,        setSearch]        = useState("");
+  const [showModal,     setShowModal]     = useState(false);
+  const [form,          setForm]          = useState<AnnouncementForm>(INITIAL_FORM);
+  const [formError,     setFormError]     = useState("");
+  const [submitting,    setSubmitting]    = useState(false);
 
-  // ── Resolved tenant ─────────────────────────────────────────────────────────
-  const tenantId = resolveTenantId() ?? "tenant_001";
-
-  // ── Firestore listener ──────────────────────────────────────────────────────
+  // ── Firestore realtime listener ────────────────────────────────────────────
   useEffect(() => {
     const q = query(
       collection(db, `tenants/${tenantId}/announcements`),
@@ -83,108 +83,120 @@ export default function Announcements() {
     const unsub = onSnapshot(
       q,
       (snap: QuerySnapshot<DocumentData>) => {
-        setAnnouncements(
-          snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement))
-        );
+        setAnnouncements(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement)));
         setLoading(false);
+        setFetchError(null);
       },
       (err) => {
-        console.error("Announcements listener error:", err);
+        console.error("[Announcements] listener error:", err);
+        setFetchError("Could not load announcements. Check your connection.");
         setLoading(false);
       }
     );
 
-    return unsub; // cleanup on unmount
+    return unsub;
   }, [tenantId]);
 
-  // ── Derived state ───────────────────────────────────────────────────────────
-  const filtered = announcements.filter(
-    (a) =>
-      a.title.toLowerCase().includes(search.toLowerCase()) ||
-      a.body.toLowerCase().includes(search.toLowerCase())
-  );
+  // ── Derived state (memoized) ───────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    const term = search.toLowerCase();
+    return announcements.filter(
+      (a) =>
+        a.title.toLowerCase().includes(term) ||
+        a.body.toLowerCase().includes(term)
+    );
+  }, [announcements, search]);
 
-  const thisMonthCount = announcements.filter((a) => {
-    if (!a.createdAt) return false;
-    const d   = a.createdAt.toDate();
+  const thisMonthCount = useMemo(() => {
     const now = new Date();
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).length;
+    return announcements.filter((a) => {
+      if (!a.createdAt) return false;
+      const d = a.createdAt.toDate();
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    }).length;
+  }, [announcements]);
 
-  // ── Handlers ────────────────────────────────────────────────────────────────
+  // ── Handlers ───────────────────────────────────────────────────────────────
   const resetModal = () => {
     setShowModal(false);
     setForm(INITIAL_FORM);
-    setError("");
+    setFormError("");
   };
 
+  const updateForm = (field: keyof AnnouncementForm, value: string) =>
+    setForm((prev) => ({ ...prev, [field]: value }));
+
   const handleSubmit = async () => {
-    if (!form.title.trim() || !form.body.trim()) {
-      setError("Title and message are required");
-      return;
-    }
+    if (!form.title.trim()) { setFormError("Title is required");   return; }
+    if (!form.body.trim())  { setFormError("Message is required"); return; }
 
     setSubmitting(true);
-    setError("");
+    setFormError("");
 
     try {
-      await addDoc(collection(db, `tenants/${tenantId}/announcements`), {
-        title:     form.title.trim(),
-        body:      form.body.trim(),
-        postedBy:  currentUser?.uid ?? "unknown",
-        groupId:   form.groupId,
-        createdAt: Timestamp.now(),
-      });
+      const ref = await addDoc(
+        collection(db, `tenants/${tenantId}/announcements`),
+        {
+          title:     form.title.trim(),
+          body:      form.body.trim(),
+          postedBy:  currentUser?.uid ?? "unknown",
+          groupId:   form.groupId,
+          createdAt: Timestamp.now(),
+        }
+      );
 
-      await addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
+      // Fire-and-forget audit log — non-critical
+      addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
         actorUserId: currentUser?.uid ?? "unknown",
         action:      "CREATE_ANNOUNCEMENT",
         entityType:  "announcement",
-        entityId:    form.title.trim(),
+        entityId:    ref.id,
         timestamp:   Timestamp.now(),
-      });
+      }).catch((err) => console.warn("[Announcements] audit log failed:", err));
 
       resetModal();
     } catch (err) {
-      console.error("Post announcement error:", err);
-      setError("Failed to post announcement. Try again.");
+      console.error("[Announcements] post error:", err);
+      setFormError("Failed to post announcement. Please try again.");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="page">
       <style>{pageStyles}</style>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Announcements</h1>
           <p className="page-sub">Post notices that reach every member instantly</p>
         </div>
-        <button className="btn-add" onClick={() => setShowModal(true)}>
-          + Post Announcement
-        </button>
+
+        {/* RBAC: only owner, admin, treasurer see this */}
+        {canWrite && (
+          <button className="btn-add" onClick={() => setShowModal(true)}>
+            + Post Announcement
+          </button>
+        )}
       </div>
 
-      {/* Stats */}
+      {/* ── Stats ── */}
       <div className="stat-row">
         {[
-          { label: "Total Posts",    value: announcements.length,  sub: "all time" },
-          { label: "This Month",     value: thisMonthCount,         sub: "recent announcements" },
+          { label: "Total Posts",  value: announcements.length, sub: "all time" },
+          { label: "This Month",   value: thisMonthCount,        sub: "recent announcements" },
           {
             label: "Last Post",
-            value: announcements.length > 0
+            value: announcements[0]
               ? timeAgo(announcements[0].createdAt, renderTime)
               : "—",
-            sub: announcements.length > 0
-              ? announcements[0].title.slice(0, 20) + (announcements[0].title.length > 20 ? "..." : "")
-              : "No posts",
+            sub: announcements[0]?.title?.slice(0, 24) ?? "No posts yet",
             small: true,
           },
-          { label: "Pinned",         value: 0,                      sub: "pinned notices" },
+          { label: "Pinned", value: 0, sub: "pinned notices" },
         ].map((s) => (
           <div className="stat-card" key={s.label}>
             <div className="stat-label">{s.label}</div>
@@ -196,7 +208,7 @@ export default function Announcements() {
         ))}
       </div>
 
-      {/* Search */}
+      {/* ── Search ── */}
       <div className="search-bar">
         <input
           className="search-input"
@@ -206,15 +218,27 @@ export default function Announcements() {
         />
       </div>
 
-      {/* Posts */}
-      {loading ? (
+      {/* ── Body ── */}
+      {fetchError ? (
+        <div className="card">
+          <div className="empty-state">
+            <div className="empty-title" style={{ color: "#DC2626" }}>
+              {fetchError}
+            </div>
+          </div>
+        </div>
+      ) : loading ? (
         <div className="loading"><div className="spinner" /></div>
       ) : filtered.length === 0 ? (
         <div className="card">
           <div className="empty-state">
-            <div className="empty-icon">📢</div>
+            <div className="empty-icon"></div>
             <div className="empty-title">No announcements yet</div>
-            <div className="empty-sub">Post a notice to keep all members informed.</div>
+            <div className="empty-sub">
+              {canWrite
+                ? "Post a notice to keep all members informed."
+                : "No announcements have been posted yet."}
+            </div>
           </div>
         </div>
       ) : (
@@ -228,33 +252,28 @@ export default function Announcements() {
               }}
             >
               <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                {/* Avatar */}
                 <div
                   className="avatar"
                   style={{
                     background: AVATAR_COLORS[i % AVATAR_COLORS.length],
-                    width: 40, height: 40, fontSize: 15, flexShrink: 0, marginTop: 2,
+                    width: 40, height: 40, fontSize: 15,
+                    flexShrink: 0, marginTop: 2,
                   }}
                 >
                   {a.postedBy.slice(0, 2).toUpperCase()}
                 </div>
 
                 <div style={{ flex: 1 }}>
-                  {/* Title */}
                   <div style={{ fontWeight: 600, fontSize: 15, color: "#1A1A1A", marginBottom: 6 }}>
                     {a.title}
                   </div>
 
-                  {/* Meta */}
                   <div style={{ fontSize: 12, color: "#AAA", marginBottom: 12 }}>
                     Posted by <strong style={{ color: "#888" }}>{a.postedBy}</strong>
                     {" · "}{timeAgo(a.createdAt, renderTime)}
-                    {" · "}{a.createdAt?.toDate().toLocaleDateString("en-KE", {
-                      day: "numeric", month: "long", year: "numeric",
-                    })}
+                    {" · "}{formatDate(a.createdAt)}
                   </div>
 
-                  {/* Body */}
                   <div style={{
                     fontSize: 14, color: "#444", lineHeight: 1.7,
                     background: "#FAFAF7", borderRadius: 10, padding: "12px 16px",
@@ -269,16 +288,17 @@ export default function Announcements() {
         </div>
       )}
 
-      {/* Modal */}
-      {showModal && (
+      {/* ── Modal (canWrite guard — defence in depth) ── */}
+      {showModal && canWrite && (
         <div className="modal-overlay" onClick={resetModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2 className="modal-title">Post Announcement</h2>
               <button className="modal-close" onClick={resetModal}>✕</button>
             </div>
+
             <div className="modal-body">
-              {error && <div className="error-box">⚠ {error}</div>}
+              {formError && <div className="error-box">⚠ {formError}</div>}
 
               <div className="form-group">
                 <label className="form-label">Title</label>
@@ -286,7 +306,7 @@ export default function Announcements() {
                   className="form-input"
                   placeholder="e.g. Meeting this Saturday"
                   value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  onChange={(e) => updateForm("title", e.target.value)}
                 />
               </div>
 
@@ -296,13 +316,13 @@ export default function Announcements() {
                   className="form-input"
                   placeholder="Write your announcement here..."
                   value={form.body}
-                  onChange={(e) => setForm({ ...form, body: e.target.value })}
+                  onChange={(e) => updateForm("body", e.target.value)}
                   style={{ minHeight: 120 }}
                 />
               </div>
 
               <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>
-                📣 This will be visible to all group members.
+                This will be visible to all group members.
               </div>
 
               <div className="modal-actions">

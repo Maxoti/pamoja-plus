@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { User } from "firebase/auth";
 import {
   onAuthStateChanged,
@@ -19,145 +19,181 @@ import {
   limit,
   Timestamp,
 } from "firebase/firestore";
+
 import { auth, db, setTenantId, clearTenantId } from "../firebase";
 import { AuthContext } from "./AuthContext";
+import type { Role, AuthContextType } from "./types";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Firestore membership resolution
+// ─────────────────────────────────────────────────────────────
 
-/**
- * Looks up the user's tenantId from tenantMembers collection
- * and stores it in sessionStorage + localStorage for all pages to use.
- *
- * This must be called after EVERY login — email, Google, or join flow.
- */
-const resolveAndStoreTenant = async (uid: string): Promise<void> => {
-  try {
-    const q = query(
+interface TenantMembership {
+  tenantId: string;
+  role: Role;
+}
+
+const normalizeRole = (role: string | null): Role => {
+  if (!role) return "member";
+  if (role === "admin" || role === "treasurer" || role === "member") return role;
+
+  // legacy safety (if DB still has old values)
+  return "member";
+};
+
+const fetchMembership = async (uid: string): Promise<TenantMembership | null> => {
+  const snap = await getDocs(
+    query(
       collection(db, "tenantMembers"),
       where("userId", "==", uid),
       limit(1)
-    );
-    const snap = await getDocs(q);
+    )
+  );
 
-    if (!snap.empty) {
-      const tenantId = snap.docs[0].data().tenantId as string;
-      setTenantId(tenantId);
-      console.log(` Tenant resolved: "${tenantId}" for user: "${uid}"`);
-    } else {
-      console.warn(` No tenantMember found for uid: "${uid}"`);
-    }
-  } catch (err) {
-    console.error(" resolveAndStoreTenant error:", err);
-  }
+  if (snap.empty) return null;
+
+  const data = snap.docs[0].data();
+
+  return {
+    tenantId: data.tenantId as string,
+    role: normalizeRole(data.role as string),
+  };
 };
 
-/**
- * Creates a user profile document in Firestore if it doesn't exist yet.
- * Safe to call multiple times — only writes on first login.
- */
-const createUserProfile = async (
+// ─────────────────────────────────────────────────────────────
+// User profile helper
+// ─────────────────────────────────────────────────────────────
+
+const ensureUserProfile = async (
   user: User,
   name?: string,
   phone?: string
 ): Promise<void> => {
-  const userRef  = doc(db, "users", user.uid);
-  const userSnap = await getDoc(userRef);
+  const ref = doc(db, "users", user.uid);
+  const snap = await getDoc(ref);
 
-  if (!userSnap.exists()) {
-    await setDoc(userRef, {
-      name:      name || user.displayName || "Unknown",
-      email:     user.email,
-      phone:     phone || "",
-      createdAt: Timestamp.now(),
-    });
-  }
+  if (snap.exists()) return;
+
+  await setDoc(ref, {
+    name: name || user.displayName || "Unknown",
+    email: user.email,
+    phone: phone || "",
+    createdAt: Timestamp.now(),
+  });
 };
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Provider
+// ─────────────────────────────────────────────────────────────
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [loading, setLoading]         = useState(true);
+  const [role, setRole] = useState<Role>(null);
+  const [tenantId, setTenant] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // ── Auth methods ────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────
+  // Resolve membership (tenant + role)
+  // ───────────────────────────────────────────────────────────
 
-  /**
-   * Email/password login.
-   * Resolves and stores tenantId after successful auth.
-   */
-  const loginWithEmail = async (email: string, password: string): Promise<void> => {
-    const result = await signInWithEmailAndPassword(auth, email, password);
-    await resolveAndStoreTenant(result.user.uid);
-  };
+  const applyMembership = useCallback(async (uid: string) => {
+    const membership = await fetchMembership(uid);
 
-  /**
-   * New user registration.
-   * tenantId is stored in Register.tsx after tenant document is created.
-   * We only create the user profile here.
-   */
-  const registerWithEmail = async (
+    if (!membership) {
+      console.warn(`[Auth] No tenant membership for uid: ${uid}`);
+      setRole(null);
+      setTenant(null);
+      clearTenantId();
+      return;
+    }
+
+    setTenant(membership.tenantId);
+    setTenantId(membership.tenantId);
+
+    setRole(membership.role);
+  }, []);
+
+  // ───────────────────────────────────────────────────────────
+  // Auth methods
+  // ───────────────────────────────────────────────────────────
+
+  const loginWithEmail = useCallback(async (email: string, password: string) => {
+    const { user } = await signInWithEmailAndPassword(auth, email, password);
+    await applyMembership(user.uid);
+  }, [applyMembership]);
+
+  const registerWithEmail = useCallback(async (
     email: string,
     password: string,
     name: string,
     phone: string
-  ): Promise<void> => {
-    const result = await createUserWithEmailAndPassword(auth, email, password);
-    await createUserProfile(result.user, name, phone);
-    // Note: setTenantId() is called in Register.tsx after tenant + tenantMember creation
-  };
+  ) => {
+    const { user } = await createUserWithEmailAndPassword(auth, email, password);
+    await ensureUserProfile(user, name, phone);
+  }, []);
 
-  /**
-   * Google sign-in.
-   * Creates profile if new user, then resolves tenant.
-   */
-  const loginWithGoogle = async (): Promise<void> => {
+  const loginWithGoogle = useCallback(async () => {
     const provider = new GoogleAuthProvider();
-    const result   = await signInWithPopup(auth, provider);
-    await createUserProfile(result.user);
-    await resolveAndStoreTenant(result.user.uid);
-  };
+    const { user } = await signInWithPopup(auth, provider);
 
-  /**
-   * Logout — clears auth session AND tenant from storage.
-   */
-  const logout = async (): Promise<void> => {
+    await ensureUserProfile(user);
+    await applyMembership(user.uid);
+  }, [applyMembership]);
+
+  const logout = useCallback(async () => {
     await signOut(auth);
-    clearTenantId(); // ← critical: prevents stale tenant on next login
-  };
 
-  // ── Auth state listener ─────────────────────────────────────────────────────
-  // Runs once on app load. If a user is already logged in (page refresh),
-  // we re-resolve their tenant so the dashboard works without re-logging in.
+    setCurrentUser(null);
+    setRole(null);
+    setTenant(null);
+    clearTenantId();
+  }, []);
+
+  const applyRoleAfterRegistration = useCallback(async (uid: string) => {
+    await applyMembership(uid);
+  }, [applyMembership]);
+
+  // ───────────────────────────────────────────────────────────
+  // Auth listener
+  // ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
 
       if (user) {
-        // Re-resolve tenant on page refresh if session is missing
-        const stored = sessionStorage.getItem("pamoja_tenantId");
-        if (!stored) {
-          await resolveAndStoreTenant(user.uid);
-        }
+        await applyMembership(user.uid);
+      } else {
+        setRole(null);
+        setTenant(null);
+        clearTenantId();
       }
 
       setLoading(false);
     });
 
     return unsubscribe;
-  }, []);
+  }, [applyMembership]);
 
-  // ── Render ───────────────────────────────────────────────────────────────────
+  // ───────────────────────────────────────────────────────────
+  // Context value
+  // ───────────────────────────────────────────────────────────
+
+  const value: AuthContextType = {
+    currentUser,
+    tenantId,
+    loading,
+    role,
+
+    loginWithEmail,
+    registerWithEmail,
+    loginWithGoogle,
+    logout,
+    applyRoleAfterRegistration,
+  };
 
   return (
-    <AuthContext.Provider value={{
-      currentUser,
-      loading,
-      loginWithEmail,
-      registerWithEmail,
-      loginWithGoogle,
-      logout,
-    }}>
+    <AuthContext.Provider value={value}>
       {!loading && children}
     </AuthContext.Provider>
   );
