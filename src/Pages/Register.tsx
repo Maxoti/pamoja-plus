@@ -76,57 +76,108 @@ export default function Register() {
 const handleSubmit = async () => {
   setLoading(true);
   setError("");
+
+  let uid: string | null = null;
+
   try {
-    await registerWithEmail(form.adminEmail, form.password, form.adminName, form.adminPhone);
+    // ── 1. Create Firebase Auth user ─────────────────────────────────────────
+    await registerWithEmail(
+      form.adminEmail,
+      form.password,
+      form.adminName,
+      form.adminPhone
+    );
 
     const { auth } = await import("../firebase");
-    const uid = auth.currentUser?.uid;
-    if (!uid) throw new Error("User creation failed");
+    uid = auth.currentUser?.uid ?? null;
+    if (!uid) throw new Error("AUTH_NO_UID");
 
-    const tenantId = `tenant_${Date.now()}`;
+    // ── 2. Write all Firestore docs in parallel where possible ───────────────
+    const tenantId  = `tenant_${Date.now()}`;
+    const tenantRef = doc(db, "tenants", tenantId);
+    const userRef   = doc(db, "users", uid);
+    const memberRef = doc(db, "tenantMembers", `${tenantId}_${uid}`);
+    const now       = Timestamp.now();
 
-    await setDoc(doc(db, "tenants", tenantId), {
-      name: form.groupName,
-      location: form.groupLocation,
-      description: form.groupDescription,
-      plan: form.plan,
-      status: "active",
-      ownerUserId: uid,
-      createdAt: Timestamp.now(),
-    });
+    await Promise.all([
+      setDoc(tenantRef, {
+        name:        form.groupName,
+        location:    form.groupLocation,
+        description: form.groupDescription,
+        plan:        form.plan,
+        status:      "active",
+        ownerUserId: uid,
+        createdAt:   now,
+      }),
 
-    //  Key order fixed: tenantId_uid
-    await setDoc(doc(db, "tenantMembers", `${tenantId}_${uid}`), {
-      tenantId,
-      userId: uid,
-      name: form.adminName,
-      email: form.adminEmail,
-      role: "owner",
-      status: "active",
-      joinedAt: Timestamp.now(),
-    });
+      setDoc(userRef, {
+        name:      form.adminName,
+        email:     form.adminEmail,
+        phone:     form.adminPhone,
+        tenantId,
+        role:      "owner",
+        createdAt: now,
+      }),
 
-    //  Write tenantId to user doc so Dashboard can find it
-    await setDoc(doc(db, "users", uid), { tenantId }, { merge: true });
+      setDoc(memberRef, {
+        tenantId,
+        userId:   uid,
+        name:     form.adminName,
+        email:    form.adminEmail,
+        phone:    form.adminPhone,
+        role:     "owner",
+        status:   "active",
+        joinedAt: now,
+      }),
+    ]);
 
-    await addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
+    // ── 3. Audit log (non-critical — don't block navigation on failure) ──────
+    addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
       actorUserId: uid,
-      action: "TENANT_CREATED",
-      entityType: "tenant",
-      entityId: tenantId,
-      timestamp: Timestamp.now(),
-    });
+      action:      "TENANT_CREATED",
+      entityType:  "tenant",
+      entityId:    tenantId,
+      timestamp:   now,
+    }).catch((err) => console.warn("Audit log failed (non-critical):", err));
 
     navigate("/dashboard");
+
   } catch (err: unknown) {
-    if (err instanceof Error) {
-      const msg = err.message;
-      if (msg.includes("email-already-in-use")) {
-        setError("An account with this email already exists.");
-      } else {
-        setError(msg.replace("Firebase: ", "").replace(/\(auth\/.*\)\.?/, "").trim());
-      }
+    // ── Rollback: if Auth succeeded but Firestore failed, delete the Auth
+    //    user so they can retry registration cleanly next time ────────────────
+    if (uid) {
+      const { auth } = await import("../firebase");
+      await auth.currentUser?.delete().catch(() => {
+        // Deletion failed — not much we can do, log it
+        console.error("Rollback failed: could not delete orphaned Auth user", uid);
+      });
     }
+
+    if (!(err instanceof Error)) {
+      setError("Something went wrong. Please try again.");
+      return;
+    }
+
+    const raw = err.message;
+
+    const friendlyErrors: Record<string, string> = {
+      "email-already-in-use": "An account with this email already exists.",
+      "weak-password":        "Password must be at least 6 characters.",
+      "invalid-email":        "Please enter a valid email address.",
+      "network-request-failed": "Network error. Check your connection and try again.",
+      "AUTH_NO_UID":          "Account creation failed. Please try again.",
+    };
+
+    const matched = Object.entries(friendlyErrors).find(([key]) =>
+      raw.includes(key)
+    );
+
+    setError(
+      matched
+        ? matched[1]
+        : raw.replace("Firebase: ", "").replace(/\(auth\/.*?\)\.?/, "").trim()
+    );
+
   } finally {
     setLoading(false);
   }
