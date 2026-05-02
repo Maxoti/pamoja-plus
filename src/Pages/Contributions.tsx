@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
-  collection, query, onSnapshot, addDoc,
+  collection, query, onSnapshot, addDoc, getDocs,
   Timestamp, orderBy, doc, updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "../auth/AuthContext";
 import { usePermissions } from "../auth/usePermissions";
+import { useTenant } from "../hooks/useTenant";
 import { pageStyles } from "../styles/pageStyles";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -27,31 +28,40 @@ interface Contribution {
   createdAt:          Timestamp;
 }
 
+interface Member {
+  id:     string;
+  userId: string;
+  name:   string;
+  email:  string;
+}
+
 interface ContributionForm {
-  amount:   string;
-  mpesaRef: string;
-  groupId:  string;
-  cycleId:  string;
-  pledgeId: string;
+  userId:     string;
+  memberName: string;
+  amount:     string;
+  mpesaRef:   string;
+  groupId:    string;
+  cycleId:    string;
+  pledgeId:   string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const INITIAL_FORM: ContributionForm = {
-  amount:   "",
-  mpesaRef: "",
-  groupId:  "group_001",
-  cycleId:  "cycle_001",
-  pledgeId: "",
+  userId:     "",
+  memberName: "",
+  amount:     "",
+  mpesaRef:   "",
+  groupId:    "group_001",
+  cycleId:    "cycle_001",
+  pledgeId:   "",
 };
 
-const STATUS_CONFIG: Record<ContributionStatus, {
-  label: string; color: string; bg: string; 
-}> = {
-  verified: { label: "Verified", color: "#16A34A", bg: "#ECFDF5", },
-  pending:  { label: "Pending",  color: "#D97706", bg: "#FEF3C7", },
-  rejected: { label: "Rejected", color: "#DC2626", bg: "#FEF2F2",  },
-  flagged:  { label: "Flagged",  color: "#7C3AED", bg: "#F5F3FF",  },
+const STATUS_CONFIG: Record<ContributionStatus, { label: string; color: string; bg: string }> = {
+  verified: { label: "Verified", color: "#16A34A", bg: "#ECFDF5" },
+  pending:  { label: "Pending",  color: "#D97706", bg: "#FEF3C7" },
+  rejected: { label: "Rejected", color: "#DC2626", bg: "#FEF2F2" },
+  flagged:  { label: "Flagged",  color: "#7C3AED", bg: "#F5F3FF" },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,34 +74,146 @@ const formatDate = (ts: Timestamp): string =>
 const formatKES = (amount: number): string =>
   `KES ${amount.toLocaleString("en-KE")}`;
 
-// ── Component ─────────────────────────────────────────────────────────────────
+// ── MemberComboBox ────────────────────────────────────────────────────────────
+// Controlled entirely by local draft state — no useEffect to sync props → state.
+// When the parent clears `value` (reset modal), the key prop resets the component.
+
+interface MemberComboBoxProps {
+  members:  Member[];
+  value:    string;           // display name from parent (read on mount only)
+  onSelect: (uid: string, name: string) => void;
+}
+
+function MemberComboBox({ members, value, onSelect }: MemberComboBoxProps) {
+  // Draft is owned locally; initialised from prop on mount.
+  // Parent communicates resets by changing the `key` prop, not by syncing state.
+  const [draft, setDraft] = useState(value);
+  const [open,  setOpen]  = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click — no setState sync needed here
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+        // Revert unconfirmed text to last confirmed selection
+        setDraft(value);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [value]);
+
+  const filtered = useMemo(
+    () => members.filter(
+      (m) =>
+        m.name.toLowerCase().includes(draft.toLowerCase()) ||
+        m.email.toLowerCase().includes(draft.toLowerCase())
+    ),
+    [members, draft]
+  );
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <div style={{ position: "relative" }}>
+        <input
+          className="form-input"
+          placeholder="Search member by name or email…"
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          autoComplete="off"
+        />
+        {draft && (
+          <button
+            type="button"
+            onClick={() => { setDraft(""); onSelect("", ""); setOpen(false); }}
+            style={{
+              position: "absolute", right: 12, top: "50%",
+              transform: "translateY(-50%)",
+              background: "none", border: "none",
+              color: "#AAA", cursor: "pointer", fontSize: 18, lineHeight: 1,
+            }}
+          >×</button>
+        )}
+      </div>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0,
+          background: "white", border: "1.5px solid #E8E8E0",
+          borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
+          zIndex: 300, maxHeight: 220, overflowY: "auto",
+        }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: "14px 16px", fontSize: 13, color: "#AAA", textAlign: "center" }}>
+              No members found
+            </div>
+          ) : filtered.map((m) => (
+            <div
+              key={m.userId}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                onSelect(m.userId, m.name);
+                setDraft(m.name);
+                setOpen(false);
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 12,
+                padding: "10px 16px", cursor: "pointer",
+                borderBottom: "1px solid #F5F4EF",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#F5F4EF")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+            >
+              <div style={{
+                width: 34, height: 34, borderRadius: "50%",
+                background: "#1A3A2A", color: "white",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 12, fontWeight: 700, flexShrink: 0,
+              }}>
+                {m.name.slice(0, 2).toUpperCase()}
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, color: "#1A1A1A" }}>{m.name}</div>
+                <div style={{ fontSize: 11, color: "#AAA" }}>{m.email}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Contributions ─────────────────────────────────────────────────────────────
 
 export default function Contributions() {
-  const { currentUser, tenantId } = useAuth();
+  const { currentUser }                    = useAuth();
+  const { tenantId }                       = useTenant();
   const { canWrite, isAdmin, isTreasurer } = usePermissions();
 
-  // ── State ──────────────────────────────────────────────────────────────────
   const [contributions, setContributions] = useState<Contribution[]>([]);
+  const [members,       setMembers]       = useState<Member[]>([]);
   const [loading,       setLoading]       = useState(true);
   const [fetchError,    setFetchError]    = useState<string | null>(null);
   const [search,        setSearch]        = useState("");
   const [statusFilter,  setStatusFilter]  = useState<ContributionStatus | "all">("all");
   const [showModal,     setShowModal]     = useState(false);
+  const [modalKey,      setModalKey]      = useState(0);  // increment to reset combobox
   const [form,          setForm]          = useState<ContributionForm>(INITIAL_FORM);
   const [formError,     setFormError]     = useState("");
   const [submitting,    setSubmitting]    = useState(false);
   const [actionError,   setActionError]   = useState("");
 
-  // ── Realtime listener ──────────────────────────────────────────────────────
+  // ── Real-time contributions ────────────────────────────────────────────────
   useEffect(() => {
     if (!tenantId) return;
-
     const q = query(
       collection(db, `tenants/${tenantId}/contributions`),
       orderBy("createdAt", "desc")
     );
-
-    const unsub = onSnapshot(
+    return onSnapshot(
       q,
       (snap) => {
         setContributions(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Contribution)));
@@ -99,16 +221,42 @@ export default function Contributions() {
         setFetchError(null);
       },
       (err) => {
-        console.error("[Contributions] listener error:", err);
+        console.error("[Contributions] listener:", err);
         setFetchError("Could not load contributions. Check your connection.");
         setLoading(false);
       }
     );
-
-    return unsub;
   }, [tenantId]);
 
-  // ── Derived state ──────────────────────────────────────────────────────────
+  // ── Members (one-time load) ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!tenantId) return;
+    getDocs(query(collection(db, "tenantMembers"), orderBy("joinedAt", "desc")))
+      .then((snap) =>
+        setMembers(
+          snap.docs
+            .map((d) => {
+              const data = d.data();
+              return {
+                id:     d.id,
+                userId: data.userId ?? "",
+                name:   data.name   ?? data.userId ?? "Unknown",
+                email:  data.email  ?? "",
+              } as Member;
+            })
+            .filter((m) => m.userId)
+        )
+      )
+      .catch((err) => console.error("[Contributions] members load:", err));
+  }, [tenantId]);
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const memberMap = useMemo(() => {
+    const map: Record<string, Member> = {};
+    members.forEach((m) => { map[m.userId] = m; });
+    return map;
+  }, [members]);
+
   const stats = useMemo(() => {
     const verified = contributions.filter((c) => c.status === "verified");
     return {
@@ -124,28 +272,32 @@ export default function Contributions() {
   const filtered = useMemo(() => {
     const term = search.toLowerCase();
     return contributions.filter((c) => {
+      const name = (memberMap[c.userId]?.name ?? c.userId).toLowerCase();
       const matchesSearch =
         c.mpesaRef.toLowerCase().includes(term) ||
-        c.userId.toLowerCase().includes(term)   ||
+        name.includes(term) ||
         String(c.amount).includes(term);
       const matchesStatus = statusFilter === "all" || c.status === statusFilter;
       return matchesSearch && matchesStatus;
     });
-  }, [contributions, search, statusFilter]);
+  }, [contributions, memberMap, search, statusFilter]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
   const resetModal = useCallback(() => {
     setShowModal(false);
     setForm(INITIAL_FORM);
     setFormError("");
+    setModalKey((k) => k + 1);   // resets MemberComboBox via key prop
   }, []);
 
-  const updateForm = useCallback((field: keyof ContributionForm, value: string) =>
-    setForm((prev) => ({ ...prev, [field]: value })), []);
+  const updateForm = useCallback(<K extends keyof ContributionForm>(
+    field: K, val: ContributionForm[K]
+  ) => setForm((prev) => ({ ...prev, [field]: val })), []);
 
   const handleSubmit = useCallback(async () => {
     if (!tenantId || !currentUser) return;
-    if (!form.amount)   { setFormError("Amount is required");        return; }
+    if (!form.userId)   { setFormError("Please select a member");       return; }
+    if (!form.amount)   { setFormError("Amount is required");           return; }
     if (!form.mpesaRef) { setFormError("M-Pesa reference is required"); return; }
 
     const amount = Number(form.amount);
@@ -156,11 +308,10 @@ export default function Contributions() {
 
     try {
       const mpesaRef = form.mpesaRef.trim().toUpperCase();
-
       const ref = await addDoc(
         collection(db, `tenants/${tenantId}/contributions`),
         {
-          userId:             currentUser.uid,
+          userId:             form.userId,
           groupId:            form.groupId,
           cycleId:            form.cycleId,
           pledgeId:           form.pledgeId || null,
@@ -179,12 +330,13 @@ export default function Contributions() {
         action:      "CREATE_CONTRIBUTION",
         entityType:  "contribution",
         entityId:    ref.id,
+        metadata:    { recordedFor: form.userId, mpesaRef },
         timestamp:   Timestamp.now(),
-      }).catch((err) => console.warn("[Contributions] audit log failed:", err));
+      }).catch((err) => console.warn("[Contributions] audit log:", err));
 
       resetModal();
     } catch (err) {
-      console.error("[Contributions] create error:", err);
+      console.error("[Contributions] create:", err);
       setFormError("Failed to save contribution. Please try again.");
     } finally {
       setSubmitting(false);
@@ -206,18 +358,16 @@ export default function Contributions() {
         doc(db, `tenants/${tenantId}/contributions`, contribution.id),
         { status, verifiedBy: currentUser.uid, verifiedAt: Timestamp.now() }
       );
-
       addDoc(collection(db, `tenants/${tenantId}/auditLogs`), {
         actorUserId: currentUser.uid,
-        action:      status === "verified" ? "CONTRIBUTION_VERIFIED" : "CONTRIBUTION_REJECTED",
+        action:      status === "verified" ? "CONTRIBUTION_VERIFIED" : "CONTRIBUTION_FLAGGED",
         entityType:  "contribution",
         entityId:    contribution.id,
         timestamp:   Timestamp.now(),
-      }).catch((err) => console.warn("[Contributions] audit log failed:", err));
-
+      }).catch((err) => console.warn("[Contributions] audit log:", err));
       setActionError("");
     } catch (err) {
-      console.error("[Contributions] status update error:", err);
+      console.error("[Contributions] status update:", err);
       setActionError("Failed to update status. Please try again.");
     }
   }, [isAdmin, isTreasurer, tenantId, currentUser]);
@@ -227,7 +377,6 @@ export default function Contributions() {
     <div className="page">
       <style>{pageStyles}</style>
 
-      {/* ── Header ── */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Contributions</h1>
@@ -240,13 +389,12 @@ export default function Contributions() {
         )}
       </div>
 
-      {/* ── Stats ── */}
       <div className="stat-row">
         {[
           { label: "Total Collected", value: formatKES(stats.totalCollected), sub: `${stats.count} transactions` },
-          { label: "Verified",        value: stats.verified,  sub: formatKES(stats.verifiedAmount) },
-          { label: "Pending Review",  value: stats.pending,   sub: "awaiting verification" },
-          { label: "Flagged",         value: stats.flagged,   sub: "needs attention" },
+          { label: "Verified",        value: stats.verified,                  sub: formatKES(stats.verifiedAmount) },
+          { label: "Pending Review",  value: stats.pending,                   sub: "awaiting verification" },
+          { label: "Flagged",         value: stats.flagged,                   sub: "needs attention" },
         ].map((s) => (
           <div className="stat-card" key={s.label}>
             <div className="stat-label">{s.label}</div>
@@ -256,22 +404,14 @@ export default function Contributions() {
         ))}
       </div>
 
-      {/* ── Action error ── */}
       {actionError && (
-        <div style={{
-          background: "#FEF2F2", border: "1px solid #FECACA",
-          borderRadius: 10, padding: "10px 16px",
-          fontSize: 13, color: "#DC2626", marginBottom: 16,
-        }}>
-          ⚠ {actionError}
-        </div>
+        <div className="error-box" style={{ marginBottom: 16 }}>⚠ {actionError}</div>
       )}
 
-      {/* ── Search + filter ── */}
       <div style={{ display: "flex", gap: 12, marginBottom: 18 }}>
         <input
           className="search-input"
-          placeholder="Search by M-Pesa ref or member..."
+          placeholder="Search by name, M-Pesa ref or amount..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ flex: 1 }}
@@ -282,7 +422,7 @@ export default function Contributions() {
           style={{
             padding: "12px 14px", borderRadius: 12,
             border: "1.5px solid #E8E8E0", background: "#fff",
-            fontSize: 14, cursor: "pointer",
+            fontSize: 14, cursor: "pointer", outline: "none",
           }}
         >
           <option value="all">All statuses</option>
@@ -292,7 +432,6 @@ export default function Contributions() {
         </select>
       </div>
 
-      {/* ── Contributions list ── */}
       {fetchError ? (
         <div className="card">
           <div className="empty-state">
@@ -304,37 +443,32 @@ export default function Contributions() {
       ) : filtered.length === 0 ? (
         <div className="card">
           <div className="empty-state">
-            <div className="empty-icon"></div>
-            <div className="empty-title">No contributions recorded yet</div>
+            <div className="empty-icon">💸</div>
+            <div className="empty-title">No contributions yet</div>
             <div className="empty-sub">
               {canWrite
-                ? "Record your first M-Pesa contribution to get started."
+                ? "Record the first M-Pesa payment to get started."
                 : "No contributions have been recorded yet."}
             </div>
           </div>
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          {/* Table header */}
           <div style={{
             display: "grid",
             gridTemplateColumns: "2fr 1fr 1.2fr 1fr 1fr auto",
-            padding: "12px 20px",
-            background: "#FAFAF7",
+            padding: "12px 20px", background: "#FAFAF7",
             borderBottom: "1px solid #E8E8E0",
             fontSize: 11, fontWeight: 700,
             textTransform: "uppercase", letterSpacing: 1, color: "#AAA",
           }}>
-            <span>Member</span>
-            <span>Amount</span>
-            <span>M-Pesa Ref</span>
-            <span>Status</span>
-            <span>Date</span>
+            <span>Member</span><span>Amount</span><span>M-Pesa Ref</span>
+            <span>Status</span><span>Date</span>
             {(isAdmin || isTreasurer) && <span>Actions</span>}
           </div>
 
-          {/* Rows */}
           {filtered.map((c, i) => {
+            const member    = memberMap[c.userId];
             const statusCfg = STATUS_CONFIG[c.status];
             return (
               <div
@@ -342,60 +476,56 @@ export default function Contributions() {
                 style={{
                   display: "grid",
                   gridTemplateColumns: "2fr 1fr 1.2fr 1fr 1fr auto",
-                  padding: "16px 20px",
+                  padding: "14px 20px",
                   borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none",
-                  alignItems: "center",
-                  background: "white",
+                  alignItems: "center", background: "white", transition: "background 0.1s",
                 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#FAFAF7")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
               >
-                {/* Member */}
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{
                     width: 34, height: 34, borderRadius: "50%",
                     background: "#1A3A2A", color: "white",
-                    display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: 12,
-                    fontWeight: 700, flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 12, fontWeight: 700, flexShrink: 0,
                   }}>
-                    {c.userId.slice(0, 2).toUpperCase()}
+                    {(member?.name ?? c.userId).slice(0, 2).toUpperCase()}
                   </div>
-                  <span style={{ fontSize: 13, color: "#444", fontFamily: "monospace" }}>
-                    {c.userId.slice(0, 12)}…
-                  </span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: "#1A1A1A" }}>
+                      {member?.name ?? c.userId}
+                    </div>
+                    {member?.email && (
+                      <div style={{ fontSize: 11, color: "#AAA" }}>{member.email}</div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Amount */}
                 <div style={{ fontWeight: 700, fontSize: 14, color: "#1A1A1A" }}>
                   {formatKES(c.amount)}
                 </div>
 
-                {/* M-Pesa Ref */}
                 <div style={{
-                  fontFamily: "monospace", fontSize: 13,
-                  fontWeight: 600, color: "#1A3A2A",
-                  background: "#F0F7F3", padding: "3px 8px",
-                  borderRadius: 6, display: "inline-block",
+                  fontFamily: "monospace", fontSize: 13, fontWeight: 600,
+                  color: "#1A3A2A", background: "#F0F7F3",
+                  padding: "3px 8px", borderRadius: 6, display: "inline-block",
                 }}>
                   {c.mpesaRef}
                 </div>
 
-                {/* Status */}
-                <div>
-                  <span style={{
-                    fontSize: 12, fontWeight: 600,
-                    color: statusCfg.color, background: statusCfg.bg,
-                    padding: "4px 10px", borderRadius: 6,
-                  }}>
-                     {statusCfg.label}
-                  </span>
-                </div>
+                <span style={{
+                  fontSize: 12, fontWeight: 600,
+                  color: statusCfg.color, background: statusCfg.bg,
+                  padding: "4px 10px", borderRadius: 6, display: "inline-block",
+                }}>
+                  {statusCfg.label}
+                </span>
 
-                {/* Date */}
                 <div style={{ fontSize: 12, color: "#888" }}>
                   {c.createdAt ? formatDate(c.createdAt) : "—"}
                 </div>
 
-                {/* Actions */}
                 {(isAdmin || isTreasurer) && (
                   <div style={{ display: "flex", gap: 6 }}>
                     {c.status === "pending" && (
@@ -408,9 +538,7 @@ export default function Contributions() {
                             padding: "5px 10px", fontSize: 12,
                             fontWeight: 600, cursor: "pointer",
                           }}
-                        >
-                          ✓ Verify
-                        </button>
+                        >✓ Verify</button>
                         <button
                           onClick={() => updateStatus(c, "flagged")}
                           style={{
@@ -419,9 +547,7 @@ export default function Contributions() {
                             padding: "5px 10px", fontSize: 12,
                             fontWeight: 600, cursor: "pointer",
                           }}
-                        >
-                           Flag
-                        </button>
+                        >⚑ Flag</button>
                       </>
                     )}
                   </div>
@@ -432,7 +558,6 @@ export default function Contributions() {
         </div>
       )}
 
-      {/* ── Modal ── */}
       {showModal && canWrite && (
         <div className="modal-overlay" onClick={resetModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -440,44 +565,57 @@ export default function Contributions() {
               <h2 className="modal-title">Record Contribution</h2>
               <button className="modal-close" onClick={resetModal}>✕</button>
             </div>
-
             <div className="modal-body">
               {formError && <div className="error-box">⚠ {formError}</div>}
 
               <div className="form-group">
-                <label className="form-label">Amount (KES)</label>
-                <input
-                  className="form-input"
-                  type="number"
-                  placeholder="e.g. 1000"
-                  value={form.amount}
-                  onChange={(e) => updateForm("amount", e.target.value)}
+                <label className="form-label">Member</label>
+                {/* key prop resets internal draft state when modal is reopened */}
+                <MemberComboBox
+                  key={modalKey}
+                  members={members}
+                  value={form.memberName}
+                  onSelect={(uid, name) =>
+                    setForm((prev) => ({ ...prev, userId: uid, memberName: name }))
+                  }
                 />
               </div>
 
-              <div className="form-group">
-                <label className="form-label">M-Pesa Reference</label>
-                <input
-                  className="form-input"
-                  placeholder="e.g. QHJ7YT123"
-                  value={form.mpesaRef}
-                  onChange={(e) => updateForm("mpesaRef", e.target.value)}
-                  style={{ textTransform: "uppercase" }}
-                />
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Amount (KES)</label>
+                  <input
+                    className="form-input"
+                    type="number"
+                    placeholder="e.g. 1000"
+                    value={form.amount}
+                    onChange={(e) => { updateForm("amount", e.target.value); setFormError(""); }}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">M-Pesa Reference</label>
+                  <input
+                    className="form-input"
+                    placeholder="e.g. QHJ7YT123"
+                    value={form.mpesaRef}
+                    onChange={(e) => { updateForm("mpesaRef", e.target.value); setFormError(""); }}
+                    style={{ textTransform: "uppercase" }}
+                  />
+                </div>
               </div>
 
-              <div style={{ fontSize: 13, color: "#888", marginBottom: 8 }}>
-                Contribution will be recorded as <strong>pending</strong> until verified by admin or treasurer.
+              <div style={{
+                background: "#F0F7F3", border: "1px solid #BBDDC9",
+                borderRadius: 10, padding: "10px 14px",
+                fontSize: 13, color: "#1A5C35", marginBottom: 8,
+              }}>
+                ℹ Contribution will be recorded as <strong>pending</strong> until verified.
               </div>
 
               <div className="modal-actions">
                 <button className="btn-cancel" onClick={resetModal}>Cancel</button>
-                <button
-                  className="btn-submit"
-                  onClick={handleSubmit}
-                  disabled={submitting}
-                >
-                  {submitting ? "Saving..." : "Record Contribution"}
+                <button className="btn-submit" onClick={handleSubmit} disabled={submitting}>
+                  {submitting ? "Saving…" : "Record Contribution"}
                 </button>
               </div>
             </div>
