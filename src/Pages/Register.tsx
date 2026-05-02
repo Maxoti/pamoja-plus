@@ -115,7 +115,7 @@ const handleSubmit = async () => {
         email:     form.adminEmail,
         phone:     form.adminPhone,
         tenantId,
-        role:      "owner",
+        role:      "admin",
         createdAt: now,
       }),
 
@@ -125,7 +125,7 @@ const handleSubmit = async () => {
         name:     form.adminName,
         email:    form.adminEmail,
         phone:    form.adminPhone,
-        role:     "owner",
+        role:     "admin",
         status:   "active",
         joinedAt: now,
       }),
