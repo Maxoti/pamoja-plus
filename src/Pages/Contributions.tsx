@@ -435,120 +435,101 @@ export default function Contributions() {
           </div>
         </div>
       ) : (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "2fr 1fr 1.2fr 1fr 1fr auto",
-            padding: "12px 20px", background: "#FAFAF7",
-            borderBottom: "1px solid #E8E8E0",
-            fontSize: 11, fontWeight: 700,
-            textTransform: "uppercase", letterSpacing: 1, color: "#AAA",
-          }}>
-            <span>Member</span><span>Amount</span><span>M-Pesa Ref</span>
-            <span>Status</span><span>Date</span>
-            {(isAdmin || isTreasurer) && <span>Actions</span>}
+  <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+
+    {/* Desktop grid header — hidden on mobile */}
+    <div className="contrib-grid-header">
+      <span>Member</span>
+      <span>Amount</span>
+      <span>M-Pesa Ref</span>
+      <span>Status</span>
+      <span>Date</span>
+      {(isAdmin || isTreasurer) && <span>Actions</span>}
+    </div>
+
+    {filtered.map((c, i) => {
+      const member      = memberMap[c.userId];
+      const statusCfg   = STATUS_CONFIG[c.status];
+      const displayName = member?.name  ?? `User …${c.userId.slice(-6)}`;
+      const initials    = (member?.name ?? c.userId).slice(0, 2).toUpperCase();
+
+      return (
+        <div key={c.id} className="contrib-grid-row"
+          style={{ borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none" }}
+        >
+          {/* Member */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: "50%",
+              background: "#1A3A2A", color: "white",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12, fontWeight: 700, flexShrink: 0,
+            }}>
+              {initials}
+            </div>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: "#1A1A1A" }}>
+                {displayName}
+              </div>
+              {member?.email && (
+                <div style={{ fontSize: 11, color: "#AAA" }}>{member.email}</div>
+              )}
+            </div>
           </div>
 
-          {filtered.map((c, i) => {
-            const member    = memberMap[c.userId];
-            const statusCfg = STATUS_CONFIG[c.status];
-            // Display name: member name → first 8 chars of UID as fallback
-            const displayName  = member?.name  ?? `User …${c.userId.slice(-6)}`;
-            const displayEmail = member?.email ?? "";
-            const initials     = (member?.name ?? c.userId).slice(0, 2).toUpperCase();
+          {/* Amount */}
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#1A1A1A" }}>
+            {formatKES(c.amount)}
+          </div>
 
-            return (
-              <div key={c.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "2fr 1fr 1.2fr 1fr 1fr auto",
-                  padding: "14px 20px",
-                  borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none",
-                  alignItems: "center", background: "white", transition: "background 0.1s",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = "#FAFAF7")}
-                onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
-              >
-                {/* Member */}
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{
-                    width: 34, height: 34, borderRadius: "50%",
-                    background: "#1A3A2A", color: "white",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 12, fontWeight: 700, flexShrink: 0,
-                  }}>
-                    {initials}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: "#1A1A1A" }}>
-                      {displayName}
-                    </div>
-                    {displayEmail && (
-                      <div style={{ fontSize: 11, color: "#AAA" }}>{displayEmail}</div>
-                    )}
-                  </div>
-                </div>
+          {/* M-Pesa Ref */}
+          <div style={{
+            fontFamily: "monospace", fontSize: 12, fontWeight: 600,
+            color: "#1A3A2A", background: "#F0F7F3",
+            padding: "3px 8px", borderRadius: 6, display: "inline-block",
+          }}>
+            {c.mpesaRef}
+          </div>
 
-                {/* Amount */}
-                <div style={{ fontWeight: 700, fontSize: 14, color: "#1A1A1A" }}>
-                  {formatKES(c.amount)}
-                </div>
+          {/* Status */}
+          <span style={{
+            fontSize: 12, fontWeight: 600,
+            color: statusCfg.color, background: statusCfg.bg,
+            padding: "4px 10px", borderRadius: 6, display: "inline-block",
+          }}>
+            {statusCfg.label}
+          </span>
 
-                {/* M-Pesa Ref */}
-                <div style={{
-                  fontFamily: "monospace", fontSize: 13, fontWeight: 600,
-                  color: "#1A3A2A", background: "#F0F7F3",
-                  padding: "3px 8px", borderRadius: 6, display: "inline-block",
-                }}>
-                  {c.mpesaRef}
-                </div>
+          {/* Date */}
+          <div style={{ fontSize: 12, color: "#888" }}>
+            {c.createdAt ? formatDate(c.createdAt) : "—"}
+          </div>
 
-                {/* Status */}
-                <span style={{
-                  fontSize: 12, fontWeight: 600,
-                  color: statusCfg.color, background: statusCfg.bg,
-                  padding: "4px 10px", borderRadius: 6, display: "inline-block",
-                }}>
-                  {statusCfg.label}
-                </span>
-
-                {/* Date */}
-                <div style={{ fontSize: 12, color: "#888" }}>
-                  {c.createdAt ? formatDate(c.createdAt) : "—"}
-                </div>
-
-                {/* Actions */}
-                {(isAdmin || isTreasurer) && (
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {c.status === "pending" && (
-                      <>
-                        <button
-                          onClick={() => updateStatus(c, "verified")}
-                          style={{
-                            background: "#ECFDF5", border: "1px solid #BBF7D0",
-                            color: "#16A34A", borderRadius: 8,
-                            padding: "5px 10px", fontSize: 12,
-                            fontWeight: 600, cursor: "pointer",
-                          }}
-                        >✓ Verify</button>
-                        <button
-                          onClick={() => updateStatus(c, "flagged")}
-                          style={{
-                            background: "#F5F3FF", border: "1px solid #DDD6FE",
-                            color: "#7C3AED", borderRadius: 8,
-                            padding: "5px 10px", fontSize: 12,
-                            fontWeight: 600, cursor: "pointer",
-                          }}
-                        >⚑ Flag</button>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {/* Actions */}
+          {(isAdmin || isTreasurer) && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {c.status === "pending" && (
+                <>
+                  <button onClick={() => updateStatus(c, "verified")} style={{
+                    background: "#ECFDF5", border: "1px solid #BBF7D0",
+                    color: "#16A34A", borderRadius: 8,
+                    padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  }}>✓ Verify</button>
+                  <button onClick={() => updateStatus(c, "flagged")} style={{
+                    background: "#F5F3FF", border: "1px solid #DDD6FE",
+                    color: "#7C3AED", borderRadius: 8,
+                    padding: "5px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  }}> Flag</button>
+                </>
+              )}
+            </div>
+          )}
         </div>
-      )}
+      );
+    })}
+  </div>
+)
+}
 
       {showModal && canWrite && (
         <div className="modal-overlay" onClick={resetModal}>
