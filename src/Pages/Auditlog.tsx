@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  query,
-  onSnapshot,
-  orderBy,
-  limit,
-  getDocs,
-  collection,
-  where,
-  type Timestamp,
+  query, onSnapshot, orderBy, limit,
+  getDocs, collection, where, type Timestamp,
 } from "firebase/firestore";
 import { db, resolveTenantId, auditLogsCol } from "../firebase";
 import { pageStyles } from "../styles/pageStyles";
@@ -39,19 +33,21 @@ interface EnrichedLog extends AuditLog {
 // ── Action config ─────────────────────────────────────────────────────────────
 
 const ACTIONS: Record<string, { label: string; color: string; bg: string; icon: string }> = {
-  TENANT_CREATED:        { label: "Group registered",       color: "#1A3A2A", bg: "#F0F7F3", icon: "🏛️" },
-  CREATE_CONTRIBUTION:   { label: "Contribution recorded",  color: "#16A34A", bg: "#ECFDF5", icon: "💰" },
-  CONTRIBUTION_VERIFIED: { label: "Contribution verified",  color: "#16A34A", bg: "#ECFDF5", icon: "✅" },
-  CONTRIBUTION_REJECTED: { label: "Contribution rejected",  color: "#DC2626", bg: "#FEF2F2", icon: "❌" },
-  CREATE_PLEDGE:         { label: "Pledge created",         color: "#2563EB", bg: "#EFF6FF", icon: "🤝" },
-  INVITE_MEMBER:         { label: "Member invited",         color: "#7C3AED", bg: "#F5F3FF", icon: "👤" },
-  CREATE_MEETING:        { label: "Meeting scheduled",      color: "#C8891A", bg: "#FDF8F0", icon: "📅" },
-  CREATE_ANNOUNCEMENT:   { label: "Announcement posted",    color: "#0891B2", bg: "#ECFEFF", icon: "📢" },
+  TENANT_CREATED:        { label: "Group registered",      color: "#1A3A2A", bg: "#F0F7F3", icon: "🏛️" },
+  CREATE_CONTRIBUTION:   { label: "Contribution recorded", color: "#16A34A", bg: "#ECFDF5", icon: "💰" },
+  CONTRIBUTION_VERIFIED: { label: "Contribution verified", color: "#16A34A", bg: "#ECFDF5", icon: "✅" },
+  CONTRIBUTION_REJECTED: { label: "Contribution rejected", color: "#DC2626", bg: "#FEF2F2", icon: "❌" },
+  CONTRIBUTION_FLAGGED:  { label: "Contribution flagged",  color: "#7C3AED", bg: "#F5F3FF", icon: "⚑"  },
+  CREATE_PLEDGE:         { label: "Pledge created",        color: "#2563EB", bg: "#EFF6FF", icon: "🤝" },
+  INVITE_MEMBER:         { label: "Member invited",        color: "#7C3AED", bg: "#F5F3FF", icon: "👤" },
+  MEMBER_REMOVED:        { label: "Member removed",        color: "#DC2626", bg: "#FEF2F2", icon: "🚫" },
+  ROLE_UPDATED:          { label: "Role updated",          color: "#C8891A", bg: "#FDF8F0", icon: "🔄" },
+  CREATE_MEETING:        { label: "Meeting scheduled",     color: "#C8891A", bg: "#FDF8F0", icon: "📅" },
+  CREATE_ANNOUNCEMENT:   { label: "Announcement posted",   color: "#0891B2", bg: "#ECFEFF", icon: "📢" },
 };
 
-const FALLBACK_ACTION = { label: "System action", color: "#6B7280", bg: "#F3F4F6", icon: "⚙️" };
-
-const getAction = (key: string) => ACTIONS[key] ?? FALLBACK_ACTION;
+const FALLBACK = { label: "System action", color: "#6B7280", bg: "#F3F4F6", icon: "⚙️" };
+const getAction = (key: string) => ACTIONS[key] ?? FALLBACK;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -60,9 +56,9 @@ const timeAgo = (ts: Timestamp): string => {
   const mins = Math.floor(diff / 60000);
   const hrs  = Math.floor(mins / 60);
   const days = Math.floor(hrs / 24);
-  if (days)  return `${days}d ago`;
-  if (hrs)   return `${hrs}h ago`;
-  if (mins)  return `${mins}m ago`;
+  if (days) return `${days}d ago`;
+  if (hrs)  return `${hrs}h ago`;
+  if (mins) return `${mins}m ago`;
   return "just now";
 };
 
@@ -71,6 +67,9 @@ const formatFullDate = (ts: Timestamp): string =>
     day: "numeric", month: "short", year: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
+
+const truncate = (str: string, max = 24): string =>
+  str.length > max ? `${str.slice(0, max)}…` : str;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -87,43 +86,32 @@ export default function AuditLog() {
 
   // ── Realtime audit logs ────────────────────────────────────────────────────
   useEffect(() => {
-    const q = query(
-      auditLogsCol(tenantId),
-      orderBy("timestamp", "desc"),
-      limit(200)
-    );
-
     const unsub = onSnapshot(
-      q,
+      query(auditLogsCol(tenantId), orderBy("timestamp", "desc"), limit(200)),
       (snap) => {
         setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLog)));
         setLoading(false);
         setFetchError(null);
       },
       (err) => {
-        console.error("[AuditLog] listener error:", err);
+        console.error("[AuditLog] listener:", err);
         setFetchError("Could not load audit logs. Check your connection.");
         setLoading(false);
       }
     );
-
     return unsub;
   }, [tenantId]);
 
-  // ── Load member names once (scoped to tenant) ──────────────────────────────
+  // ── Member names (scoped to tenant) ───────────────────────────────────────
   useEffect(() => {
-    const loadMembers = async () => {
+    const load = async () => {
       try {
         const snap = await getDocs(
-          query(
-            collection(db, "tenantMembers"),
-            where("tenantId", "==", tenantId)
-          )
+          query(collection(db, "tenantMembers"), where("tenantId", "==", tenantId))
         );
-
         const map: Record<string, MemberSnapshot> = {};
-        snap.forEach((doc) => {
-          const data = doc.data();
+        snap.forEach((d) => {
+          const data = d.data();
           map[data.userId] = {
             uid:   data.userId,
             name:  data.name  ?? "Unknown",
@@ -131,36 +119,33 @@ export default function AuditLog() {
             role:  data.role  ?? "",
           };
         });
-
         setMembers(map);
       } catch (err) {
-        console.warn("[AuditLog] failed to load member names:", err);
+        console.warn("[AuditLog] member load failed:", err);
       }
     };
-
-    loadMembers();
+    load();
   }, [tenantId]);
 
-  // ── Enrich logs with actor names ───────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
   const enriched = useMemo<EnrichedLog[]>(() =>
     logs.map((log) => {
-      const member = members[log.actorUserId];
+      const m = members[log.actorUserId];
       return {
         ...log,
-        actorName:  member?.name  ?? "Unknown user",
-        actorEmail: member?.email ?? "",
-        actorRole:  member?.role  ?? "",
+        actorName:  m?.name  ?? "Unknown user",
+        actorEmail: m?.email ?? "",
+        actorRole:  m?.role  ?? "",
       };
     }),
   [logs, members]);
 
-  // ── Filter + search ────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     const term = search.toLowerCase();
     return enriched.filter((l) => {
       const matchesSearch =
-        l.actorName.toLowerCase().includes(term)  ||
-        l.action.toLowerCase().includes(term)     ||
+        l.actorName.toLowerCase().includes(term) ||
+        l.action.toLowerCase().includes(term)    ||
         l.entityId.toLowerCase().includes(term);
       const matchesFilter = filter === "all" || l.action === filter;
       return matchesSearch && matchesFilter;
@@ -172,9 +157,14 @@ export default function AuditLog() {
     [logs]
   );
 
+  const todayCount = useMemo(() => {
+    const today = new Date().toDateString();
+    return logs.filter((l) => l.timestamp?.toDate().toDateString() === today).length;
+  }, [logs]);
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="page">
+    <div className="page" style={{ overflowX: "hidden" }}>
       <style>{pageStyles}</style>
 
       {/* ── Header ── */}
@@ -188,15 +178,15 @@ export default function AuditLog() {
       {/* ── Stats ── */}
       <div className="stat-row">
         {[
-          { label: "Total Events",  value: logs.length,         sub: "all time" },
-          { label: "Today",         value: logs.filter((l) => {
-              const d = l.timestamp?.toDate();
-              const n = new Date();
-              return d?.toDateString() === n.toDateString();
-            }).length, sub: "activity today" },
+          { label: "Total Events",  value: logs.length,         sub: "all time"         },
+          { label: "Today",         value: todayCount,           sub: "activity today"   },
           { label: "Action Types",  value: uniqueActions.length, sub: "distinct actions" },
-          { label: "Last Activity", value: logs[0] ? timeAgo(logs[0].timestamp) : "—",
-            sub: logs[0] ? getAction(logs[0].action).label : "No activity", small: true },
+          {
+            label: "Last Activity",
+            value: logs[0] ? timeAgo(logs[0].timestamp) : "—",
+            sub:   logs[0] ? getAction(logs[0].action).label : "No activity",
+            small: true,
+          },
         ].map((s) => (
           <div className="stat-card" key={s.label}>
             <div className="stat-label">{s.label}</div>
@@ -208,33 +198,32 @@ export default function AuditLog() {
         ))}
       </div>
 
-      {/* ── Search + filter ── */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 18 }}>
+      {/* ── Search + filter — wraps on mobile ── */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 18 }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search by name, action, or entity..."
           style={{
-            flex: 1, padding: "12px 16px", borderRadius: 12,
-            border: "1.5px solid #E8E8E0", outline: "none",
-            fontSize: 14, background: "#fff",
-            boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+            flex: "1 1 200px", padding: "12px 16px",
+            borderRadius: 12, border: "1.5px solid #E8E8E0",
+            outline: "none", fontSize: 14, background: "#fff",
+            fontFamily: "'DM Sans', sans-serif",
           }}
         />
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           style={{
-            padding: "12px 14px", borderRadius: 12,
-            border: "1.5px solid #E8E8E0", background: "#fff",
-            fontSize: 14, cursor: "pointer",
+            flex: "1 1 140px", padding: "12px 14px",
+            borderRadius: 12, border: "1.5px solid #E8E8E0",
+            background: "#fff", fontSize: 14, cursor: "pointer",
+            fontFamily: "'DM Sans', sans-serif",
           }}
         >
           <option value="all">All actions</option>
           {uniqueActions.map((a) => (
-            <option key={a} value={a}>
-              {getAction(a).label}
-            </option>
+            <option key={a} value={a}>{getAction(a).label}</option>
           ))}
         </select>
       </div>
@@ -251,7 +240,7 @@ export default function AuditLog() {
       ) : filtered.length === 0 ? (
         <div className="card">
           <div className="empty-state">
-            <div className="empty-icon">📋</div>
+            <div className="empty-icon"></div>
             <div className="empty-title">No audit logs found</div>
             <div className="empty-sub">Activity will appear here as members take actions.</div>
           </div>
@@ -264,35 +253,41 @@ export default function AuditLog() {
               <div
                 key={log.id}
                 style={{
-                  display: "flex", gap: 14, padding: "16px 20px",
+                  display: "flex", gap: 12, padding: "14px 16px",
                   borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none",
                   alignItems: "flex-start",
                 }}
               >
-                {/* Icon */}
+                {/* ── Icon ── */}
                 <div style={{
-                  width: 38, height: 38, borderRadius: 10,
+                  width: 36, height: 36, borderRadius: 10,
                   background: action.bg, flexShrink: 0,
                   display: "flex", alignItems: "center",
-                  justifyContent: "center", fontSize: 16,
+                  justifyContent: "center", fontSize: 15,
                 }}>
                   {action.icon}
                 </div>
 
-                {/* Content */}
+                {/* ── Content — minWidth:0 prevents flex overflow ── */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, color: action.color, marginBottom: 3 }}>
+                  <div style={{
+                    fontWeight: 600, fontSize: 13,
+                    color: action.color, marginBottom: 3,
+                  }}>
                     {action.label}
                   </div>
 
-                  <div style={{ fontSize: 13, color: "#444", marginBottom: 2 }}>
+                  <div style={{
+                    fontSize: 12, color: "#444", marginBottom: 2,
+                    display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4,
+                  }}>
                     <strong>{log.actorName}</strong>
                     {log.actorEmail && (
-                      <span style={{ color: "#888" }}> · {log.actorEmail}</span>
+                      <span style={{ color: "#888" }}>· {truncate(log.actorEmail, 28)}</span>
                     )}
                     {log.actorRole && (
                       <span style={{
-                        marginLeft: 6, fontSize: 11, fontWeight: 600,
+                        fontSize: 10, fontWeight: 600,
                         color: "#1A3A2A", background: "#F0F7F3",
                         padding: "1px 6px", borderRadius: 4,
                         textTransform: "capitalize",
@@ -302,17 +297,22 @@ export default function AuditLog() {
                     )}
                   </div>
 
-                  <div style={{ fontSize: 11, color: "#AAA" }}>
-                    {log.entityType} · {log.entityId}
+                  {/* ── Truncated entity ID ── */}
+                  <div style={{
+                    fontSize: 11, color: "#AAA",
+                    overflow: "hidden", textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}>
+                    {log.entityType} · {truncate(log.entityId, 20)}
                   </div>
                 </div>
 
-                {/* Time */}
+                {/* ── Time ── */}
                 <div style={{ textAlign: "right", flexShrink: 0 }}>
                   <div style={{ fontSize: 12, color: "#888", marginBottom: 2 }}>
                     {timeAgo(log.timestamp)}
                   </div>
-                  <div style={{ fontSize: 11, color: "#BBB" }}>
+                  <div style={{ fontSize: 10, color: "#BBB", whiteSpace: "nowrap" }}>
                     {formatFullDate(log.timestamp)}
                   </div>
                 </div>
