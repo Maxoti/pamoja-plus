@@ -10,6 +10,7 @@ import Meetings from './Pages/Meetings'
 import Announcements from './Pages/Announcement'
 import AuditLog from './Pages/Auditlog'
 import JoinPage from './Pages/JoinPage'
+import Cycles from './Pages/Cycles'
 
 function App() {
   return (
@@ -26,7 +27,7 @@ function App() {
   <Route path="/announcements" element={<Announcements />} />  
   <Route path="/audit-log" element={<AuditLog />} /> 
   <Route path="/join" element={<JoinPage />} /> 
-
+  <Route path="/cycles" element={<Cycles />} /> 
       </Routes>
     </BrowserRouter>
   )

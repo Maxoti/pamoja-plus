@@ -39,6 +39,7 @@ const NAV = [
   { icon: "◈", label: "Contributions", path: "/contributions" },
   { icon: "◎", label: "Members",       path: "/members"       },
   { icon: "◇", label: "Pledges",       path: "/pledges"       },
+  { icon: "🔄", label: "Cycles", path: "/cycles" },
   { icon: "◻", label: "Meetings",      path: "/meetings"      },
   { icon: "▲", label: "Announcements", path: "/announcements" },
   { icon: "◑", label: "Audit Log",     path: "/audit-log"     },
