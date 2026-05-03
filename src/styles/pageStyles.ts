@@ -32,7 +32,7 @@ export const pageStyles = `
   .badge-fulfilled { background: #EDFAF2; color: #16A34A; }
   .badge-defaulted { background: #FEF2F2; color: #DC2626; }
   .badge-cancelled { background: #F3F4F6; color: #6B7280; }
-  .badge-admin     { background: #F5F0FF; color: #7C3AED; }
+  .badge-admin     { background: #F0F7F3; color: #1A3A2A; }
   .badge-member    { background: #F3F4F6; color: #374151; }
   .badge-owner     { background: #FDF8F0; color: #C8891A; }
   .badge-treasurer { background: #EFF6FF; color: #2563EB; }
@@ -108,7 +108,6 @@ export const pageStyles = `
     font-size: 11px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 1px; color: #AAA;
   }
-
   .contrib-grid-row {
     display: grid;
     grid-template-columns: 2fr 1fr 1.2fr 1fr 1fr auto;
@@ -117,10 +116,29 @@ export const pageStyles = `
     background: white;
     transition: background 0.1s;
   }
-
   .contrib-grid-row:hover { background: #FAFAF7; }
 
-  /* ── Section label (used in Meetings) ── */
+  /* ── Members responsive grid ── */
+  .member-grid-header {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr auto;
+    padding: 12px 20px;
+    background: #FAFAF7;
+    border-bottom: 1px solid #E8E8E0;
+    font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px; color: #AAA;
+  }
+  .member-grid-row {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr auto;
+    padding: 16px 20px;
+    align-items: center;
+    background: white;
+    transition: background 0.1s;
+  }
+  .member-grid-row:hover { background: #FAFAF7; }
+
+  /* ── Section label (Meetings) ── */
   .section-label { padding: 8px 20px; font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #AAA; background: #FAFAF7; border-bottom: 1px solid #F0F0E8; }
 
   /* ── Meeting card ── */
@@ -135,7 +153,7 @@ export const pageStyles = `
   .meeting-info { flex: 1; }
   .meeting-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .meeting-header .title { font-size: 14px; font-weight: 600; color: #1A1A1A; }
-  .meta { font-size: 12px; color: #AAA; display: flex; gap: 12px; }
+  .meta  { font-size: 12px; color: #AAA; display: flex; gap: 12px; }
   .notes { font-size: 13px; color: #666; margin-top: 6px; background: #FAFAF7; border-radius: 8px; padding: 8px 10px; border-left: 3px solid #C8891A; }
   .meeting-list { display: flex; flex-direction: column; }
 
@@ -157,9 +175,19 @@ export const pageStyles = `
     .modal-header { padding: 20px 20px 0; }
     .modal-body { padding: 16px 20px 24px; }
 
-    /* Contributions grid → card on mobile */
+    /* Contributions → cards */
     .contrib-grid-header { display: none; }
     .contrib-grid-row {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px;
+      align-items: flex-start;
+    }
+
+    /* Members → cards */
+    .member-grid-header { display: none; }
+    .member-grid-row {
       display: flex;
       flex-direction: column;
       gap: 10px;

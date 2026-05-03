@@ -278,166 +278,151 @@ export default function Members() {
         />
       </div>
 
-      {/* ── Member list ── */}
-      {fetchError ? (
-        <div className="card">
-          <div className="empty-state">
-            <div className="empty-title" style={{ color: "#DC2626" }}>{fetchError}</div>
-          </div>
-        </div>
-      ) : loading ? (
-        <div className="loading"><div className="spinner" /></div>
-      ) : filtered.length === 0 ? (
-        <div className="card">
-          <div className="empty-state">
-            <div className="empty-icon">👥</div>
-            <div className="empty-title">No members found</div>
-            <div className="empty-sub">
-              {canWrite ? "Invite your first member to get started." : "No members have been added yet."}
+    {/* ── Member list ── */}
+{fetchError ? (
+  <div className="card">
+    <div className="empty-state">
+      <div className="empty-title" style={{ color: "#DC2626" }}>{fetchError}</div>
+    </div>
+  </div>
+) : loading ? (
+  <div className="loading"><div className="spinner" /></div>
+) : filtered.length === 0 ? (
+  <div className="card">
+    <div className="empty-state">
+      <div className="empty-icon">👥</div>
+      <div className="empty-title">No members found</div>
+      <div className="empty-sub">
+        {canWrite ? "Invite your first member to get started." : "No members have been added yet."}
+      </div>
+    </div>
+  </div>
+) : (
+  <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+
+    {/* ── Grid header — hidden on mobile via CSS ── */}
+    <div className="member-grid-header">
+      <span>Member</span>
+      <span>Role</span>
+      <span>Status</span>
+      <span>Joined</span>
+      {canWrite && <span>Actions</span>}
+    </div>
+
+    {/* ── Rows — grid on desktop, cards on mobile ── */}
+    {filtered.map((m, i) => {
+      const roleStyle     = ROLE_STYLES[m.role]     ?? ROLE_STYLES.member;
+      const statusStyle   = STATUS_STYLES[m.status] ?? STATUS_STYLES.active;
+      const isCurrentUser = m.userId === currentUser?.uid;
+
+      return (
+        <div
+          key={m.id}
+          className="member-grid-row"
+          style={{
+            borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none",
+            background:   isCurrentUser ? "#FAFFF8" : "white",
+          }}
+        >
+          {/* Member info */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{
+              width: 38, height: 38, borderRadius: "50%",
+              background: AVATAR_COLORS[i % AVATAR_COLORS.length],
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 13, fontWeight: 700, color: "white", flexShrink: 0,
+            }}>
+              {getInitials(m.name, m.email)}
             </div>
-          </div>
-        </div>
-      ) : (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          {/* Table header */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
-            padding: "12px 20px",
-            background: "#FAFAF7",
-            borderBottom: "1px solid #E8E8E0",
-            fontSize: 11, fontWeight: 700,
-            textTransform: "uppercase", letterSpacing: 1,
-            color: "#AAA",
-          }}>
-            <span>Member</span>
-            <span>Role</span>
-            <span>Status</span>
-            <span>Joined</span>
-            {canWrite && <span>Actions</span>}
-          </div>
-
-          {/* Rows */}
-          {filtered.map((m, i) => {
-            const roleStyle   = ROLE_STYLES[m.role]   ?? ROLE_STYLES.member;
-            const statusStyle = STATUS_STYLES[m.status] ?? STATUS_STYLES.active;
-            const isCurrentUser = m.userId === currentUser?.uid;
-
-            return (
-              <div
-                key={m.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "2fr 1fr 1fr 1fr auto",
-                  padding: "16px 20px",
-                  borderBottom: i < filtered.length - 1 ? "1px solid #F3F4F6" : "none",
-                  alignItems: "center",
-                  background: isCurrentUser ? "#FAFFF8" : "white",
-                }}
-              >
-                {/* Member info */}
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{
-                    width: 38, height: 38, borderRadius: "50%",
-                    background: AVATAR_COLORS[i % AVATAR_COLORS.length],
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 13, fontWeight: 700, color: "white", flexShrink: 0,
-                  }}>
-                    {getInitials(m.name, m.email)}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14, color: "#1A1A1A" }}>
-                      {m.name ?? "Unknown"}
-                      {isCurrentUser && (
-                        <span style={{
-                          marginLeft: 6, fontSize: 10, fontWeight: 600,
-                          color: "#1A3A2A", background: "#F0F7F3",
-                          padding: "1px 6px", borderRadius: 4,
-                        }}>You</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#888" }}>{m.email ?? "—"}</div>
-                  </div>
-                </div>
-
-                {/* Role */}
-                <div>
-                  {isAdmin && !isCurrentUser ? (
-                    <select
-                      value={m.role}
-                      onChange={(e) => updateRole(m, e.target.value as MemberRole)}
-                      style={{
-                        fontSize: 12, fontWeight: 600,
-                        color: roleStyle.color, background: roleStyle.bg,
-                        border: "none", borderRadius: 6,
-                        padding: "4px 8px", cursor: "pointer",
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      <option value="member">Member</option>
-                      <option value="secretary">Secretary</option>
-                      <option value="treasurer">Treasurer</option>
-                      <option value="admin">Admin</option>
-                    </select>
-                  ) : (
-                    <span style={{
-                      fontSize: 12, fontWeight: 600,
-                      color: roleStyle.color, background: roleStyle.bg,
-                      padding: "4px 10px", borderRadius: 6,
-                      textTransform: "capitalize",
-                    }}>
-                      {m.role}
-                    </span>
-                  )}
-                </div>
-
-                {/* Status */}
-                <div>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "#1A1A1A" }}>
+                {m.name ?? "Unknown"}
+                {isCurrentUser && (
                   <span style={{
-                    fontSize: 12, fontWeight: 600,
-                    color: statusStyle.color, background: statusStyle.bg,
-                    padding: "4px 10px", borderRadius: 6,
-                  }}>
-                    {statusStyle.label}
-                  </span>
-                </div>
-
-                {/* Joined */}
-                <div style={{ fontSize: 12, color: "#888" }}>
-                  {m.joinedAt ? formatDate(m.joinedAt) : "—"}
-                </div>
-
-                {/* Actions */}
-                {canWrite && (
-                  <div>
-                    {isAdmin && !isCurrentUser && (
-                      <button
-                        onClick={() => removeMember(m)}
-                        style={{
-                          background: "none", border: "1px solid #FECACA",
-                          color: "#DC2626", borderRadius: 8,
-                          padding: "5px 12px", fontSize: 12,
-                          fontWeight: 600, cursor: "pointer",
-                          transition: "all 0.2s",
-                        }}
-                        onMouseEnter={(e) => {
-                          (e.target as HTMLButtonElement).style.background = "#FEF2F2";
-                        }}
-                        onMouseLeave={(e) => {
-                          (e.target as HTMLButtonElement).style.background = "none";
-                        }}
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
+                    marginLeft: 6, fontSize: 10, fontWeight: 600,
+                    color: "#1A3A2A", background: "#F0F7F3",
+                    padding: "1px 6px", borderRadius: 4,
+                  }}>You</span>
                 )}
               </div>
-            );
-          })}
-        </div>
-      )}
+              <div style={{ fontSize: 12, color: "#888" }}>{m.email ?? "—"}</div>
+            </div>
+          </div>
 
+          {/* Role */}
+          <div>
+            {isAdmin && !isCurrentUser ? (
+              <select
+                value={m.role}
+                onChange={(e) => updateRole(m, e.target.value as MemberRole)}
+                style={{
+                  fontSize: 12, fontWeight: 600,
+                  color: roleStyle.color, background: roleStyle.bg,
+                  border: "none", borderRadius: 6,
+                  padding: "4px 8px", cursor: "pointer",
+                  textTransform: "capitalize", outline: "none",
+                  fontFamily: "'DM Sans', sans-serif",
+                }}
+              >
+                <option value="member">Member</option>
+                <option value="secretary">Secretary</option>
+                <option value="treasurer">Treasurer</option>
+                <option value="admin">Admin</option>
+              </select>
+            ) : (
+              <span style={{
+                fontSize: 12, fontWeight: 600,
+                color: roleStyle.color, background: roleStyle.bg,
+                padding: "4px 10px", borderRadius: 6,
+                textTransform: "capitalize", display: "inline-block",
+              }}>
+                {m.role}
+              </span>
+            )}
+          </div>
+
+          {/* Status */}
+          <div>
+            <span style={{
+              fontSize: 12, fontWeight: 600,
+              color: statusStyle.color, background: statusStyle.bg,
+              padding: "4px 10px", borderRadius: 6, display: "inline-block",
+            }}>
+              {statusStyle.label}
+            </span>
+          </div>
+
+          {/* Joined */}
+          <div style={{ fontSize: 12, color: "#888" }}>
+            {m.joinedAt ? formatDate(m.joinedAt) : "—"}
+          </div>
+
+          {/* Actions */}
+          {canWrite && (
+            <div>
+              {isAdmin && !isCurrentUser && (
+                <button
+                  onClick={() => removeMember(m)}
+                  style={{
+                    background: "none", border: "1px solid #FECACA",
+                    color: "#DC2626", borderRadius: 8,
+                    padding: "5px 12px", fontSize: 12,
+                    fontWeight: 600, cursor: "pointer",
+                    transition: "all 0.2s",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "#FEF2F2")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    })}
+  </div>
+)}
       {/* ── Invite modal ── */}
       {showModal && canWrite && (
         <div className="modal-overlay" onClick={resetModal}>
